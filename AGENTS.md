@@ -31,7 +31,7 @@ Edits in the repo are live for `cx` and the status line (symlinks). The app must
 - Panel: header "Usage" with `+` menu (add account) and refresh; card "Claude" (bars per limit);
   card "Codex" (one row per account, click to switch, checkmark on active, free resets line);
   footer "Open at login" (`SMAppService.mainApp`) and Quit.
-- Refresh: every 5 min, and when the panel window becomes key if data is older than 30 s.
+- Refresh: every 10 min (timer tolerance 60 s, energy), and when the panel window becomes key if data is older than 30 s.
 - Design brief from the owner: Apple look, discreet, sober. Colors by percentage only:
   green < 50, orange ≥ 50, red ≥ 80. Reset line = "Resets in 3h 26m" left (secondary) + exact
   date right (tertiary, "today 19:30" / "Thu 8 Oct, 06:00", en_GB format).

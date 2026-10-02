@@ -48,8 +48,13 @@ enum Brand {
     case claude, openai
     var resource: String { self == .claude ? "claude" : "openai" }
     var fallbackSymbol: String { self == .claude ? "sparkle" : "chevron.left.forwardslash.chevron.right" }
-    // Template images copied from the Claude and ChatGPT apps by build.sh
-    var image: NSImage? { Bundle.main.url(forResource: resource, withExtension: "png").flatMap(NSImage.init(contentsOf:)) }
+    // Template images copied from the Claude and ChatGPT apps by build.sh, loaded once
+    var image: NSImage? { self == .claude ? Brand.claudeImage : Brand.openaiImage }
+    private static let claudeImage = load("claude")
+    private static let openaiImage = load("openai")
+    private static func load(_ name: String) -> NSImage? {
+        Bundle.main.url(forResource: name, withExtension: "png").flatMap(NSImage.init(contentsOf:))
+    }
 }
 
 func usageColor(_ percent: Int) -> Color { percent >= 80 ? .red : percent >= 50 ? .orange : .green }
@@ -139,8 +144,14 @@ func parseCodex(_ data: Data) -> [CodexAccount]? {
     }
 }
 
+struct ClaudeAuth {
+    let token: String
+    let expiresAt: Date?
+    var valid: Bool { expiresAt.map { $0 > Date() } ?? true }
+}
+
 /// Claude Code's OAuth access token from the login Keychain (nil if missing or expired).
-func claudeToken() -> String? {
+func claudeAuth() -> ClaudeAuth? {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
     process.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
@@ -154,13 +165,12 @@ func claudeToken() -> String? {
           let oauth = obj["claudeAiOauth"] as? [String: Any],
           let token = oauth["accessToken"] as? String
     else { return nil }
-    if let expiresAt = number(oauth["expiresAt"]), expiresAt / 1000 < Date().timeIntervalSince1970 { return nil }
-    return token
+    let auth = ClaudeAuth(token: token, expiresAt: number(oauth["expiresAt"]).map { Date(timeIntervalSince1970: $0 / 1000) })
+    return auth.valid ? auth : nil
 }
 
 /// Live Claude limits (5h, weekly, per-model weekly such as Fable) from the usage API used by Claude Code.
-func fetchClaudeLive() async -> [UsageWindow]? {
-    guard let token = claudeToken() else { return nil }
+func fetchClaudeLive(token: String) async -> [UsageWindow]? {
     var request = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!)
     request.timeoutInterval = 15
     request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -218,12 +228,15 @@ final class UsageModel: ObservableObject {
     @Published var menuBarImage = NSImage()
     private var lastRefresh = Date.distantPast
     private var timer: Timer?
+    private var auth: ClaudeAuth?  // cached until it expires or fails, to skip a `security` run per refresh
+    private var menuBarItems: [MenuBarLabel.Item]?
 
     init() {
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
+        timer?.tolerance = 60  // lets macOS coalesce the wakeup with other activity
     }
 
     func refreshIfStale() {
@@ -237,10 +250,14 @@ final class UsageModel: ObservableObject {
         loading = true
         lastRefresh = Date()
         Task {
-            if let live = await fetchClaudeLive() {
+            if auth?.valid != true { auth = await Task.detached { claudeAuth() }.value }
+            guard let token = auth?.token else { return }
+            if let live = await fetchClaudeLive(token: token) {
                 self.claude = live
                 self.claudeUpdated = Date()
                 self.updateMenuBarImage()
+            } else {
+                auth = nil  // revoked or rotated by Claude Code: re-read the Keychain next time
             }
         }
         Task.detached {
@@ -288,6 +305,8 @@ final class UsageModel: ObservableObject {
         if let worst = codex.first(where: \.active)?.worst {
             items.append(.init(brand: .openai, percent: worst.percent))
         }
+        guard items != menuBarItems else { return }
+        menuBarItems = items
         let alert = items.contains { $0.percent >= 80 }
         let renderer = ImageRenderer(content: MenuBarLabel(items: items, color: alert ? .red : .black))
         renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
@@ -300,7 +319,7 @@ final class UsageModel: ObservableObject {
 // MARK: - Views
 
 struct MenuBarLabel: View {
-    struct Item { let brand: Brand; let percent: Int }
+    struct Item: Equatable { let brand: Brand; let percent: Int }
     let items: [Item]
     let color: Color
 
