@@ -1,0 +1,391 @@
+#!/usr/bin/env python3
+"""cx — gérer plusieurs comptes Codex (ChatGPT).
+
+  cx                 liste les comptes avec leur usage (compte actif marqué ●)
+  cx add [nom]       connecte un nouveau compte (sans toucher au compte actif)
+  cx save <nom>      enregistre le compte actuellement connecté sous <nom>
+  cx use <nom>       bascule Codex sur <nom>
+  cx rm <nom>        retire <nom> de la liste (ne révoque rien)
+
+Les identifiants sont copiés dans ~/.codex-accounts/<nom>.json (droits 600).
+Codex lit ~/.codex/auth.json : `cx use` remplace ce fichier, après avoir
+sauvegardé les jetons à jour du compte actif, puis redémarre le daemon
+app-server : la commande `codex` s'y rattache et il garde le compte en mémoire.
+L'app ChatGPT (Codex) et l'extension Cursor ont leur propre serveur : il faut
+les relancer pour qu'elles changent de compte.
+"""
+import base64
+import json
+import os
+import shutil
+import socket
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+
+CODEX_HOME = os.environ.get("CODEX_HOME", os.path.expanduser("~/.codex"))
+AUTH = os.path.join(CODEX_HOME, "auth.json")
+STORE = os.path.expanduser("~/.codex-accounts")
+USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+RESETS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"  # read-only (never /consume)
+
+GREEN, YELLOW, RED, BOLD, DIM, RESET = "\033[32m", "\033[33m", "\033[31m", "\033[1m", "\033[2m", "\033[0m"
+
+
+def die(msg):
+    print(f"{RED}{msg}{RESET}", file=sys.stderr)
+    sys.exit(1)
+
+
+def load(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+def write_private(path, data):
+    fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(path + ".tmp", path)
+
+
+def jwt_claims(token):
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload))
+    except Exception:
+        return {}
+
+
+def identity(auth):
+    """(email, plan, user+account key) of a Codex auth.json."""
+    tokens = auth.get("tokens") or {}
+    claims = jwt_claims(tokens.get("id_token", ""))
+    info = claims.get("https://api.openai.com/auth", {})
+    email = claims.get("email") or "?"
+    key = (info.get("chatgpt_user_id") or email, tokens.get("account_id"))
+    return email, info.get("chatgpt_plan_type") or "?", key
+
+
+def accounts():
+    if not os.path.isdir(STORE):
+        return {}
+    return {
+        f[:-5]: os.path.join(STORE, f)
+        for f in sorted(os.listdir(STORE))
+        if f.endswith(".json") and not f.startswith("_")
+    }
+
+
+def active_name():
+    """Name of the stored account matching ~/.codex/auth.json, if any."""
+    if not os.path.exists(AUTH):
+        return None
+    key = identity(load(AUTH))[2]
+    for name, path in accounts().items():
+        if identity(load(path))[2] == key:
+            return name
+    return None
+
+
+def sync_active():
+    """Copy the live auth.json (possibly refreshed by Codex) back into its stored account."""
+    name = active_name()
+    if name:
+        write_private(accounts()[name], load(AUTH))
+    return name
+
+
+def fetch_usage(auth):
+    tokens = auth.get("tokens") or {}
+    exp = jwt_claims(tokens.get("access_token", "")).get("exp", 0)
+    if exp and exp < time.time():
+        return {"error": "jeton expiré (cx use pour le rafraîchir)"}
+    headers = {
+        "Authorization": f"Bearer {tokens.get('access_token', '')}",
+        "ChatGPT-Account-Id": tokens.get("account_id") or "",
+        "User-Agent": "codex_cli_rs",
+    }
+    try:
+        with urllib.request.urlopen(urllib.request.Request(USAGE_URL, headers=headers), timeout=10) as r:
+            usage = json.load(r)
+    except urllib.error.HTTPError as e:
+        return {"error": f"HTTP {e.code}"}
+    except Exception as e:
+        return {"error": str(e)[:60]}
+    # Free "full reset" credits: optional, ignored if the endpoint fails
+    try:
+        with urllib.request.urlopen(urllib.request.Request(RESETS_URL, headers=headers), timeout=10) as r:
+            credits = json.load(r).get("credits") or []
+        usage["_resets"] = sorted(
+            c["expires_at"] for c in credits
+            if c.get("status") == "available" and c.get("is_supported_by_plan") and c.get("expires_at"))
+    except Exception:
+        pass
+    return usage
+
+
+def fmt_window(w):
+    if not w:
+        return None
+    secs = w.get("limit_window_seconds") or 0
+    label = "session" if secs <= 6 * 3600 else "weekly" if secs >= 6 * 86400 else f"{secs // 3600}h"
+    pct = int(w.get("used_percent") or 0)
+    color = RED if pct >= 80 else YELLOW if pct >= 50 else GREEN
+    r = max(0, int(w.get("reset_at", time.time()) - time.time()))
+    left = f"{r // 86400}d" if r >= 86400 else f"{r // 3600}h{r % 3600 // 60:02d}" if r >= 3600 else f"{r // 60}m"
+    return f"{label}: {color}{left} {pct}%{RESET}"
+
+
+def all_usages():
+    """(active account name, {name: auth}, {name: usage response})."""
+    current = sync_active()
+    auths = {n: load(p) for n, p in accounts().items()}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        usages = dict(zip(auths, pool.map(fetch_usage, auths.values())))
+    return current, auths, usages
+
+
+def cmd_json():
+    """Machine-readable account list, used by the menu bar plugin."""
+    current, auths, usages = all_usages()
+    out = []
+    for name, auth in auths.items():
+        email, plan, _ = identity(auth)
+        u = usages[name]
+        rl = u.get("rate_limit") or {}
+        out.append({
+            "name": name, "email": email, "plan": plan, "active": name == current,
+            "error": u.get("error"), "limit_reached": bool(rl.get("limit_reached")),
+            "windows": [w for w in (rl.get("primary_window"), rl.get("secondary_window")) if w],
+            "resets": u.get("_resets", []),
+        })
+    print(json.dumps(out))
+
+
+def cmd_list():
+    if not accounts():
+        print("Aucun compte enregistré.")
+        print(f"  {DIM}cx save <nom>{RESET}  enregistre le compte actuellement connecté")
+        print(f"  {DIM}cx add <nom>{RESET}   connecte un autre compte")
+        return
+    current, auths, usages = all_usages()
+    width = max(len(n) for n in auths)
+    for name, auth in auths.items():
+        email, plan, _ = identity(auth)
+        mark = f"{GREEN}●{RESET}" if name == current else " "
+        u = usages[name]
+        if "error" in u:
+            usage = f"{DIM}{u['error']}{RESET}"
+        else:
+            rl = u.get("rate_limit") or {}
+            parts = [fmt_window(rl.get("primary_window")), fmt_window(rl.get("secondary_window"))]
+            usage = " │ ".join(p for p in parts if p) or f"{DIM}pas de limite{RESET}"
+            if rl.get("limit_reached"):
+                usage += f" {RED}(limite atteinte){RESET}"
+            if u.get("_resets"):
+                usage += f"  {DIM}↺ {len(u['_resets'])} reset(s), expire le {u['_resets'][0][:10]}{RESET}"
+        print(f"{mark} {BOLD}{name:<{width}}{RESET}  {DIM}{email} · {plan}{RESET}  {usage}")
+    if current is None and os.path.exists(AUTH):
+        email = identity(load(AUTH))[0]
+        print(f"\n{YELLOW}Le compte actif ({email}) n'est pas enregistré : cx save <nom>{RESET}")
+
+
+def cmd_save(name):
+    if not os.path.exists(AUTH):
+        die("Codex n'est connecté à aucun compte (codex login).")
+    os.makedirs(STORE, mode=0o700, exist_ok=True)
+    existing = active_name()
+    if existing and existing != name:
+        die(f"Ce compte est déjà enregistré sous « {existing} ».")
+    write_private(os.path.join(STORE, f"{name}.json"), load(AUTH))
+    print(f"Compte {identity(load(AUTH))[0]} enregistré sous « {name} ».")
+
+
+def cmd_add(name=None):
+    """Log in a new account in a throwaway CODEX_HOME; name defaults to the email's local part."""
+    os.makedirs(STORE, mode=0o700, exist_ok=True)
+    if name and name in accounts():
+        die(f"« {name} » existe déjà.")
+    tmp = tempfile.mkdtemp(prefix="cx-login-")
+    try:
+        print(f"{DIM}Connexion dans le navigateur — choisis le compte à ajouter.{RESET}")
+        subprocess.run(["codex", "login"], env={**os.environ, "CODEX_HOME": tmp}, check=False)
+        new = os.path.join(tmp, "auth.json")
+        if not os.path.exists(new):
+            die("Connexion annulée, rien n'a été ajouté.")
+        auth = load(new)
+        key = identity(auth)[2]
+        for other, path in accounts().items():
+            if identity(load(path))[2] == key:
+                die(f"Ce compte est déjà enregistré sous « {other} ».")
+        name = name or identity(auth)[0].split("@")[0]
+        if name in accounts():
+            die(f"« {name} » existe déjà : relance avec cx add <autre-nom>.")
+        write_private(os.path.join(STORE, f"{name}.json"), auth)
+        print(f"Compte {identity(auth)[0]} ajouté sous « {name} ». Pour l'utiliser : cx use {name}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def codex_bin():
+    return shutil.which("codex") or os.path.expanduser("~/.local/bin/codex")
+
+
+def daemon_email():
+    """Email of the account the running app-server daemon has loaded (None if not running).
+    Speaks the daemon's WebSocket JSON-RPC over its control socket and calls account/read."""
+    path = os.path.join(CODEX_HOME, "app-server-control", "app-server-control.sock")
+    if not os.path.exists(path):
+        return None
+    try:
+        s = socket.socket(socket.AF_UNIX)
+        s.settimeout(5)
+        s.connect(path)
+        key = base64.b64encode(os.urandom(16)).decode()
+        s.sendall((f"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                   f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = s.recv(4096)
+            if not chunk:
+                return None
+            buf += chunk
+        head, buf = buf.split(b"\r\n\r\n", 1)
+        if b" 101 " not in head.split(b"\r\n")[0]:
+            return None
+
+        def send(obj):
+            data = json.dumps(obj).encode()
+            mask = os.urandom(4)
+            size = bytes([0x80 | len(data)]) if len(data) < 126 else bytes([0x80 | 126]) + struct.pack(">H", len(data))
+            s.sendall(bytes([0x81]) + size + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+
+        def read(n):
+            nonlocal buf
+            while len(buf) < n:
+                chunk = s.recv(65536)
+                if not chunk:
+                    raise EOFError
+                buf += chunk
+            out, buf = buf[:n], buf[n:]
+            return out
+
+        send({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "cx", "version": "1"}}})
+        send({"method": "initialized"})
+        send({"id": 2, "method": "account/read", "params": {}})
+        while True:
+            b1, b2 = read(2)
+            n = b2 & 0x7F
+            if n == 126:
+                n = struct.unpack(">H", read(2))[0]
+            elif n == 127:
+                n = struct.unpack(">Q", read(8))[0]
+            payload = read(n)
+            if b1 & 0x0F != 1:
+                continue
+            msg = json.loads(payload)
+            if msg.get("id") == 2:
+                return ((msg.get("result") or {}).get("account") or {}).get("email")
+    except Exception:
+        return None
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def restart_daemon():
+    """Restart the shared app-server daemon if running: it caches auth in memory and
+    `codex` attaches to it, so new sessions would otherwise keep the previous account."""
+    try:
+        status = subprocess.run([codex_bin(), "app-server", "daemon", "version"],
+                                capture_output=True, text=True, timeout=15).stdout
+        if '"running"' not in status:
+            return False
+        subprocess.run([codex_bin(), "app-server", "daemon", "restart"],
+                       capture_output=True, text=True, timeout=60)
+        return True
+    except Exception:
+        return False
+
+
+def other_codex_hosts():
+    """Apps embedding their own Codex app-server, which only pick up a new account on restart."""
+    try:
+        ps = subprocess.run(["ps", "-axo", "command"], capture_output=True, text=True).stdout
+    except Exception:
+        return []
+    hosts = []
+    if "ChatGPT.app/Contents/Resources/codex-cli" in ps:
+        hosts.append("ChatGPT")
+    if "extensions/openai.chatgpt" in ps:
+        hosts.append("Cursor")
+    return hosts
+
+
+def cmd_use(name):
+    accs = accounts()
+    if name not in accs:
+        die(f"Compte inconnu « {name} ». Comptes : {', '.join(accs) or 'aucun'}")
+    current = sync_active()
+    target_email = identity(load(accs[name]))[0]
+    if current == name:
+        loaded = daemon_email()
+        if loaded in (None, target_email):
+            print(f"Déjà sur « {name} ».")
+        elif restart_daemon():
+            print(f"Le daemon Codex était resté sur {loaded} : redémarré sur « {name} ».")
+        return
+    if current is None and os.path.exists(AUTH):
+        backup = os.path.join(STORE, f"_backup-{int(time.time())}.json")
+        write_private(backup, load(AUTH))
+        print(f"{YELLOW}Compte actif non enregistré, sauvegardé dans {backup}{RESET}")
+    write_private(AUTH, load(accs[name]))
+    print(f"Codex utilise maintenant « {name} » ({identity(load(AUTH))[0]}).")
+    if restart_daemon():
+        loaded = daemon_email()
+        if loaded == target_email:
+            print(f"{DIM}Daemon Codex redémarré et vérifié : les nouvelles sessions codex utilisent ce compte.{RESET}")
+        else:
+            print(f"{YELLOW}Le daemon Codex a redémarré mais annonce {loaded or 'aucun compte'} : relance-le avec codex app-server daemon restart.{RESET}")
+    hosts = other_codex_hosts()
+    if hosts:
+        print(f"NOTE: Restart {' and '.join(hosts)} to use this account there.")
+
+
+def cmd_rm(name):
+    accs = accounts()
+    if name not in accs:
+        die(f"Compte inconnu « {name} ».")
+    if name == active_name():
+        die("C'est le compte actif : bascule d'abord sur un autre (cx use <nom>).")
+    os.remove(accs[name])
+    print(f"« {name} » retiré.")
+
+
+def main(argv):
+    if not argv or argv[0] in ("ls", "list"):
+        return cmd_list()
+    if argv[0] in ("-h", "--help", "help"):
+        return print(__doc__.strip())
+    cmds = {"add": cmd_add, "save": cmd_save, "use": cmd_use, "rm": cmd_rm}
+    if argv[0] == "json":
+        return cmd_json()
+    if argv[0] == "add" and len(argv) == 1:
+        return cmd_add()
+    if argv[0] in cmds and len(argv) == 2:
+        return cmds[argv[0]](argv[1])
+    if len(argv) == 1 and argv[0] in accounts():
+        return cmd_use(argv[0])
+    die("Usage : cx [ls | add <nom> | save <nom> | use <nom> | rm <nom>]")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
