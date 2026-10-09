@@ -10,13 +10,17 @@ trap 'rm -rf "$tmp"' EXIT
 step() { printf '• %s\n' "$1"; }
 fail() { printf 'check: FAILED (%s)\n' "$1"; exit 1; }
 
-step "shell syntax"
-for f in install.sh app/build.sh claude/statusline.sh tools/*.sh tools/*/*.sh; do
-  if [ -f "$f" ]; then sh -n "$f" || fail "syntax error in $f"; fi
-done
+# The scans below rely on git: refuse to run (rather than pass) outside a work tree.
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "not a git work tree"
+
+step "shell syntax (every tracked or new .sh file)"
+git ls-files --cached --others --exclude-standard -- '*.sh' > "$tmp/scripts"
+while IFS= read -r f; do
+  sh -n "$f" || fail "syntax error in $f"
+done < "$tmp/scripts"
 
 step "cx, ccx parse as Python 3.9 (the Command Line Tools' python3)"
-/usr/bin/python3 - bin/cx bin/ccx <<'EOF' || fail "Python syntax"
+/usr/bin/python3 -B - bin/cx bin/ccx <<'EOF' || fail "Python syntax"
 import ast, sys
 for path in sys.argv[1:]:
     with open(path) as f:
@@ -33,12 +37,19 @@ xcrun swiftc -parse-as-library -swift-version 5 -D SCREENSHOTS -target "$(uname 
   app/AIUsage.swift tools/screenshots/Screenshots.swift -o "$tmp/screenshots" || fail "screenshot tool build"
 
 step "no secrets or personal data (tracked and new files)"
-exclude=':!tools/check.sh'  # holds the patterns themselves
-if git grep --untracked -nIE 'sk-ant-[A-Za-z0-9_-]{10,}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}|/Users/[A-Za-z]' -- . "$exclude"; then
-  fail "token or absolute home path above"
-fi
-emails=$(git grep --untracked -hIoE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' -- . "$exclude" \
-  | grep -vE '@([A-Za-z0-9-]+\.)*example(\.com)?$|@users\.noreply\.github\.com$|@[0-9]x\.(png|jpe?g)$' || true)
+# Patterns are written so they never match their own source: this file is scanned too.
+# git grep exits 1 when nothing matches; anything else is an error, not a pass.
+scan() {
+  set +e
+  git grep --untracked "$@" > "$tmp/found"
+  code=$?
+  set -e
+  [ "$code" -le 1 ] || fail "git grep failed ($code)"
+}
+scan -nIE '(^|[^A-Za-z0-9])(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,})|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}|/U[s]ers/[A-Za-z]' -- .
+if [ -s "$tmp/found" ]; then cat "$tmp/found"; fail "token or absolute home path above"; fi
+scan -hIoE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' -- .
+emails=$(grep -viE '@([a-z0-9-]+\.)*example(\.(com|org|net))?$|@users\.noreply\.github\.com$|@[0-9]x\.(png|jpe?g)$' "$tmp/found" || true)
 [ -z "$emails" ] || { printf '%s\n' "$emails"; fail "real-looking email above (use example.com)"; }
 
 echo "check: OK"

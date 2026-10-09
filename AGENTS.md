@@ -13,7 +13,7 @@ Any non-trivial change, code or docs, follows [docs/PROCESS.md](docs/PROCESS.md)
 ```
 
 - The owner signs off at each gate; nothing is pushed before the audit is SAFE and the owner
-  says go. Merge only on the owner's say.
+  says go. Merge only on the owner's say. Small changes skip steps 1–3, never the audit.
 - Audit protocol: [docs/PROCESS_AUDIT.md](docs/PROCESS_AUDIT.md), skill `independent-audit`;
   grill: skill `grill-me` (both in `.claude/skills/`, linked for Codex in `.agents/skills/`).
 - Pre-flight, before every commit and in every audit: `tools/check.sh` → must end with

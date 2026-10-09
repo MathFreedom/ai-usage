@@ -1,6 +1,7 @@
 # Process — from investigation to pull request
 
-The method followed for any non-trivial change, code or docs. The owner signs off at each
+The method followed for any non-trivial change, code or docs. Every change, even a small one,
+still goes through the [independent audit](PROCESS_AUDIT.md) before it is pushed. The owner signs off at each
 **gate**; implementation flows straight into the audit. The audit has its own reference,
 [PROCESS_AUDIT](PROCESS_AUDIT.md), not duplicated here.
 
@@ -12,8 +13,8 @@ The method followed for any non-trivial change, code or docs. The owner signs of
 ## 1. Investigation — read-only
 
 - **Status quo**: what the code actually does today, on an up-to-date `origin/main` (a local
-  checkout may lag behind) — the real call sites, `AGENTS.md`, and what the tools print when
-  run read-only (`cx`, `ccx`, `cx json`, `ccx json`).
+  checkout may lag behind) — the real call sites, `AGENTS.md`, and what the listing commands
+  print (`cx`, `ccx`, `cx json`, `ccx json`; they only refresh their own account copies).
 - **Strategy**: the possible options compared on effort, risk, impact and maintenance, with a
   recommendation for the **simplest** good one — not the first that works.
 - Live data that the repo can't show (an account's plan, a provider's API behavior) is checked
@@ -22,6 +23,8 @@ The method followed for any non-trivial change, code or docs. The owner signs of
 - **Gate**: the owner validates the findings and the strategy, and starts the grill.
 
 ## 2. `/grill-me` — review before the plan
+
+(`/grill-me` in Claude Code; in Codex, ask for the `grill-me` skill.)
 
 What gets reviewed is the **strategy recommended by the investigation**; the written plan only
 exists at step 3.
