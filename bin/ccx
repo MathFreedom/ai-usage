@@ -1,0 +1,454 @@
+#!/usr/bin/env python3
+"""ccx — gérer plusieurs comptes Claude Code (abonnement claude.ai).
+
+  ccx                liste les comptes avec leur usage (compte actif marqué ●)
+  ccx add [nom]      connecte un nouveau compte (sans toucher au compte actif)
+  ccx save [nom]     enregistre le compte actuellement connecté sous <nom>
+  ccx use <nom>      bascule Claude Code sur <nom>
+  ccx rm <nom>       retire <nom> de la liste (ne révoque rien)
+
+Claude Code garde son jeton dans le Trousseau (entrée « Claude Code-credentials »)
+et le profil du compte dans ~/.claude.json (clé oauthAccount). Chaque compte
+enregistré a sa propre entrée du Trousseau « ai-usage-claude:<nom> » ; les
+métadonnées (email, plan, dernier usage connu, sans secret) sont dans
+~/.config/ai-usage/claude-accounts.json.
+
+`ccx use` recopie d'abord les jetons à jour du compte actif dans sa sauvegarde
+(Claude Code les fait tourner), puis remplace l'entrée active et oauthAccount.
+Les sessions Claude Code déjà ouvertes gardent l'ancien jeton en mémoire : il
+faut les relancer. Les jetons des comptes inactifs ne sont jamais renouvelés
+par ccx : leur usage affiché est le dernier connu.
+"""
+import base64
+import calendar
+import getpass
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+import zlib
+from concurrent.futures import ThreadPoolExecutor
+
+ACTIVE_SERVICE = "Claude Code-credentials"
+STORE_PREFIX = "ai-usage-claude:"
+STORE_ACCOUNT = "ai-usage"
+CLAUDE_JSON = os.path.expanduser("~/.claude.json")
+META = os.path.expanduser("~/.config/ai-usage/claude-accounts.json")
+IDENTITY_CACHE = os.path.expanduser("~/.config/ai-usage/claude-identity-cache.json")  # token hash → (uuid, email)
+USAGE_TTL = 120  # seconds; /api/oauth/usage is rate limited (429), so don't re-read it more often
+API = "https://api.anthropic.com/api/oauth"
+SECURITY = "/usr/bin/security"
+
+GREEN, YELLOW, RED, BOLD, DIM, RESET = "\033[32m", "\033[33m", "\033[31m", "\033[1m", "\033[2m", "\033[0m"
+
+
+def die(msg):
+    print(f"{RED}{msg}{RESET}", file=sys.stderr)
+    sys.exit(1)
+
+
+# Keychain
+
+def kc_read(service):
+    r = subprocess.run([SECURITY, "find-generic-password", "-s", service, "-w"],
+                       capture_output=True, text=True)
+    return r.stdout.rstrip("\n") if r.returncode == 0 else None
+
+
+def kc_write(service, account, text):
+    """Create or update a generic password; the secret goes through stdin (hex), never argv.
+    `security -i` truncates lines around 4 KB, hence pack() for our own (larger) entries."""
+    cmd = f'add-generic-password -U -a "{account}" -s "{service}" -X {text.encode().hex()}\n'
+    if len(cmd) > 4000:
+        die(f"Identifiants trop volumineux pour le Trousseau ({service}).")
+    r = subprocess.run([SECURITY, "-i"], input=cmd, capture_output=True, text=True)
+    if r.returncode != 0 or "error" in (r.stdout + r.stderr).lower():
+        die(f"Écriture dans le Trousseau impossible ({service}).")
+
+
+def kc_delete(service):
+    subprocess.run([SECURITY, "delete-generic-password", "-s", service], capture_output=True)
+
+
+def kc_claude_services():
+    """Every Keychain service name Claude Code uses (one per CLAUDE_CONFIG_DIR)."""
+    dump = subprocess.run([SECURITY, "dump-keychain"], capture_output=True, text=True).stdout
+    return set(re.findall(r'"svce"<blob>="(Claude Code-credentials[^"]*)"', dump))
+
+
+def pack(obj):
+    return "z:" + base64.b64encode(zlib.compress(json.dumps(obj, separators=(",", ":")).encode(), 9)).decode()
+
+
+def unpack(text):
+    if text.startswith("z:"):
+        return json.loads(zlib.decompress(base64.b64decode(text[2:])))
+    return json.loads(text)
+
+
+# Files
+
+def load_json(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def write_json(path, data, mode=0o600):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.ccx-{os.getpid()}"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+
+
+def meta():
+    return load_json(META, {})
+
+
+def save_meta(data):
+    write_json(META, data)
+
+
+def set_oauth_account(account):
+    """Replace only the oauthAccount key of ~/.claude.json, keeping its permissions."""
+    config = load_json(CLAUDE_JSON, None)
+    if config is None:
+        die(f"{CLAUDE_JSON} illisible.")
+    config["oauthAccount"] = account
+    mode = os.stat(CLAUDE_JSON).st_mode & 0o777
+    write_json(CLAUDE_JSON, config, mode)
+
+
+# API
+
+def api_get(path, token):
+    req = urllib.request.Request(f"{API}/{path}", headers={
+        "Authorization": f"Bearer {token}",
+        "anthropic-beta": "oauth-2025-04-20",
+        "User-Agent": "ai-usage-ccx/1.0",
+    })
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.load(r)
+
+
+def token_of(creds):
+    """Access token if not expired, else None (ccx never refreshes tokens itself)."""
+    oauth = (creds or {}).get("claudeAiOauth") or {}
+    exp = oauth.get("expiresAt") or 0
+    if not oauth.get("accessToken") or (exp and exp / 1000 < time.time() + 60):
+        return None
+    return oauth["accessToken"]
+
+
+def profile(creds):
+    """(uuid, email) of the account a credentials blob belongs to, or None.
+    Cached per access token: the answer never changes for a given token."""
+    token = token_of(creds)
+    if not token:
+        return None
+    key = hashlib.sha256(token.encode()).hexdigest()[:24]
+    cache = load_json(IDENTITY_CACHE, {})
+    if key in cache:
+        return tuple(cache[key])
+    try:
+        account = api_get("profile", token).get("account") or {}
+    except Exception:
+        return None
+    found = (account.get("uuid"), account.get("email"))
+    cache = {k: v for k, v in cache.items() if k != key}
+    cache[key] = list(found)
+    write_json(IDENTITY_CACHE, dict(list(cache.items())[-20:]))
+    return found
+
+
+def fetch_usage(creds):
+    """Live limits as [{label, percent, resets_at}], or None if the token is expired or the call fails."""
+    token = token_of(creds)
+    if not token:
+        return None
+    try:
+        limits = api_get("usage", token).get("limits") or []
+    except Exception:
+        return None
+    windows = []
+    for limit in limits:
+        kind = limit.get("kind")
+        if kind == "session":
+            label = "5h"
+        elif kind == "weekly_all":
+            label = "Weekly"
+        else:
+            model = (((limit.get("scope") or {}).get("model")) or {}).get("display_name")
+            label = f"{model or 'Other'} weekly"
+        windows.append({"label": label, "percent": int(limit.get("percent") or 0),
+                        "resets_at": limit.get("resets_at")})
+    return windows
+
+
+# Accounts
+
+def stored(name):
+    raw = kc_read(STORE_PREFIX + name)
+    return unpack(raw) if raw else None
+
+
+def store(name, creds, oauth_account):
+    kc_write(STORE_PREFIX + name, STORE_ACCOUNT, pack({"credentials": creds, "oauthAccount": oauth_account}))
+    m = meta()
+    entry = m.get(name, {})
+    entry.update({
+        "uuid": (oauth_account or {}).get("accountUuid"),
+        "email": (oauth_account or {}).get("emailAddress"),
+        "plan": (creds.get("claudeAiOauth") or {}).get("subscriptionType"),
+    })
+    m[name] = entry
+    save_meta(m)
+
+
+def active():
+    """(credentials, oauthAccount) currently used by Claude Code."""
+    raw = kc_read(ACTIVE_SERVICE)
+    creds = json.loads(raw) if raw else None
+    return creds, load_json(CLAUDE_JSON, {}).get("oauthAccount")
+
+
+def active_uuid():
+    creds, account = active()
+    found = profile(creds)
+    return found[0] if found else (account or {}).get("accountUuid")
+
+
+def name_for(uuid):
+    return next((n for n, e in meta().items() if uuid and e.get("uuid") == uuid), None)
+
+
+def sync_active():
+    """Copy the live credentials (Claude Code rotates them) back into the active account's backup."""
+    creds, account = active()
+    if not creds:
+        return None
+    found = profile(creds)
+    uuid = found[0] if found else (account or {}).get("accountUuid")
+    name = name_for(uuid)
+    if name:
+        saved = stored(name) or {}
+        same_account = (account or {}).get("accountUuid") == uuid
+        oauth_account = account if same_account else saved.get("oauthAccount")
+        if saved.get("credentials") != creds or saved.get("oauthAccount") != oauth_account:
+            store(name, creds, oauth_account)
+    return name
+
+
+def claude_sessions():
+    """Number of running Claude Code CLI processes (they keep their token in memory)."""
+    ps = subprocess.run(["ps", "-axo", "command"], capture_output=True, text=True).stdout
+    count = 0
+    helpers = ("daemon run", "--bg-pty-host", "--bg-spare")  # Claude Code's own background processes
+    for line in ps.splitlines():
+        exe = line.split(" ", 1)[0]
+        is_claude = os.path.basename(exe) == "claude" or "/.local/share/claude/versions/" in exe
+        if is_claude and not any(h in line for h in helpers):
+            count += 1
+    return count
+
+
+def account_rows():
+    """Every stored account with live usage when its token allows it, else the last known usage."""
+    current = sync_active()
+    m = meta()
+    names = sorted(m)
+    creds = {n: (stored(n) or {}).get("credentials") for n in names}
+    now = time.time()
+    stale = [n for n in names if now - (m[n].get("usage_at") or 0) > USAGE_TTL]
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        live = dict(zip(stale, pool.map(fetch_usage, [creds[n] for n in stale])))
+    for n in names:
+        if n not in stale:
+            live[n] = m[n].get("usage") or []  # read less than USAGE_TTL ago: still current
+    rows = []
+    for name in names:
+        entry = m[name]
+        windows, last_seen = live[name], None
+        if windows is not None:
+            if name in stale:
+                entry["usage"], entry["usage_at"] = windows, now
+        else:
+            windows, last_seen = entry.get("usage") or [], entry.get("usage_at")
+        rows.append({"name": name, "email": entry.get("email") or "?", "plan": entry.get("plan") or "?",
+                     "active": name == current, "windows": windows, "last_seen": last_seen,
+                     "error": None if creds[name] else "credentials missing"})
+    save_meta(m)
+    return rows
+
+
+# Commands
+
+def fmt_left(iso):
+    try:
+        reset = calendar.timegm(time.strptime(re.sub(r"\.\d+", "", iso)[:19], "%Y-%m-%dT%H:%M:%S"))  # API times are UTC
+    except Exception:
+        return None
+    r = reset - time.time()
+    if r <= 0:
+        return "reset"
+    return f"{int(r // 86400)}d" if r >= 86400 else f"{int(r // 3600)}h{int(r % 3600 // 60):02d}" if r >= 3600 else f"{int(r // 60)}m"
+
+
+def cmd_list():
+    rows = account_rows()
+    if not rows:
+        print("Aucun compte Claude enregistré.")
+        print(f"  {DIM}ccx save <nom>{RESET}  enregistre le compte actuellement connecté")
+        print(f"  {DIM}ccx add [nom]{RESET}   connecte un autre compte")
+        return
+    width = max(len(r["name"]) for r in rows)
+    for r in rows:
+        mark = f"{GREEN}●{RESET}" if r["active"] else " "
+        parts = []
+        for w in r["windows"]:
+            pct = w["percent"]
+            left = fmt_left(w.get("resets_at") or "")
+            if left == "reset":
+                pct, left = 0, None
+            color = RED if pct >= 80 else YELLOW if pct >= 50 else GREEN
+            parts.append(f"{w['label']}: {color}{left + ' ' if left else ''}{pct}%{RESET}")
+        usage = " │ ".join(parts) or f"{DIM}pas d'usage connu{RESET}"
+        if r["last_seen"]:
+            usage += f"  {DIM}(last seen {time.strftime('%d/%m %H:%M', time.localtime(r['last_seen']))}){RESET}"
+        print(f"{mark} {BOLD}{r['name']:<{width}}{RESET}  {DIM}{r['email']} · {r['plan']}{RESET}  {usage}")
+    if not any(r["active"] for r in rows):
+        print(f"\n{YELLOW}Le compte actif de Claude Code n'est pas enregistré : ccx save <nom>{RESET}")
+
+
+def cmd_json():
+    print(json.dumps(account_rows()))
+
+
+def cmd_save(name=None):
+    creds, account = active()
+    if not creds or not account:
+        die("Claude Code n'est connecté à aucun compte (claude auth login).")
+    name = name or (account.get("emailAddress") or "claude").split("@")[0]
+    found = profile(creds)
+    uuid = found[0] if found else account.get("accountUuid")
+    if found and found[0] != account.get("accountUuid"):
+        die("Le jeton actif et ~/.claude.json ne désignent pas le même compte : relance Claude Code puis réessaie.")
+    existing = name_for(uuid)
+    if existing and existing != name:
+        die(f"Ce compte est déjà enregistré sous « {existing} ».")
+    store(name, creds, account)
+    print(f"Compte {account.get('emailAddress')} enregistré sous « {name} ».")
+
+
+def cmd_add(name=None):
+    if name and name in meta():
+        die(f"« {name} » existe déjà.")
+    claude = shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
+    before_services = kc_claude_services()
+    before_active, _ = active()
+    before_uuid = active_uuid()
+    tmp = tempfile.mkdtemp(prefix="ccx-login-")
+    new_services = set()
+    try:
+        print(f"{DIM}Connexion dans le navigateur — choisis le compte Claude à ajouter.{RESET}")
+        subprocess.run([claude, "auth", "login", "--claudeai"], env={**os.environ, "CLAUDE_CONFIG_DIR": tmp})
+        new_services = kc_claude_services() - before_services
+        account = load_json(os.path.join(tmp, ".claude.json"), {}).get("oauthAccount")
+        raw = next((kc_read(s) for s in new_services), None)
+        creds = json.loads(raw) if raw else None
+        if not creds:
+            # Login landed in the shared entry: take it, then put the previous account back below.
+            now_active, _ = active()
+            creds = now_active if now_active != before_active else None
+        if not creds or not account:
+            die("Connexion annulée ou introuvable, rien n'a été ajouté.")
+        found = profile(creds)
+        uuid = found[0] if found else account.get("accountUuid")
+        if uuid == before_uuid:
+            die("C'est le compte déjà connecté dans Claude Code : utilise ccx save <nom>.")
+        if name_for(uuid):
+            die(f"Ce compte est déjà enregistré sous « {name_for(uuid)} ».")
+        name = name or (account.get("emailAddress") or "claude").split("@")[0]
+        if name in meta():
+            die(f"« {name} » existe déjà : relance avec ccx add <autre-nom>.")
+        store(name, creds, account)
+        print(f"Compte {account.get('emailAddress')} ajouté sous « {name} ». Pour l'utiliser : ccx use {name}")
+    finally:
+        now_active, _ = active()
+        if before_active and now_active != before_active and (profile(now_active) or (None,))[0] != before_uuid:
+            kc_write(ACTIVE_SERVICE, getpass.getuser(), json.dumps(before_active))
+        for service in new_services:
+            kc_delete(service)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def cmd_use(name):
+    if name not in meta():
+        die(f"Compte inconnu « {name} ». Comptes : {', '.join(sorted(meta())) or 'aucun'}")
+    current = sync_active()
+    if current == name:
+        print(f"Déjà sur « {name} ».")
+        return
+    if current is None:
+        creds, account = active()
+        if creds:
+            backup = f"_backup-{int(time.time())}"
+            kc_write(STORE_PREFIX + backup, STORE_ACCOUNT, pack({"credentials": creds, "oauthAccount": account}))
+            print(f"{YELLOW}Compte actif non enregistré, sauvegardé dans le Trousseau ({STORE_PREFIX}{backup}).{RESET}")
+    target = stored(name)
+    if not target:
+        die(f"Identifiants de « {name} » introuvables dans le Trousseau.")
+    kc_write(ACTIVE_SERVICE, getpass.getuser(), json.dumps(target["credentials"]))
+    set_oauth_account(target["oauthAccount"])
+    email = (target["oauthAccount"] or {}).get("emailAddress")
+    found = profile(target["credentials"])
+    check = f" {DIM}(vérifié){RESET}" if found and found[1] == email else ""
+    print(f"Claude Code utilise maintenant « {name} » ({email}).{check}")
+    sessions = claude_sessions()
+    if sessions:
+        plural = "s" if sessions > 1 else ""
+        print(f"NOTE: Restart open Claude Code sessions ({sessions} running) to use this account.")
+        print(f"{DIM}{sessions} session{plural} Claude Code ouverte{plural} garde{'nt' if plural else ''} l'ancien compte jusqu'à relance.{RESET}")
+
+
+def cmd_rm(name):
+    if name not in meta():
+        die(f"Compte inconnu « {name} ».")
+    if name == sync_active():
+        die("C'est le compte actif : bascule d'abord sur un autre (ccx use <nom>).")
+    kc_delete(STORE_PREFIX + name)
+    m = meta()
+    m.pop(name, None)
+    save_meta(m)
+    print(f"« {name} » retiré.")
+
+
+def main(argv):
+    if not argv or argv[0] in ("ls", "list"):
+        return cmd_list()
+    if argv[0] in ("-h", "--help", "help"):
+        return print(__doc__.strip())
+    if argv[0] == "json":
+        return cmd_json()
+    if argv[0] in ("add", "save") and len(argv) == 1:
+        return cmd_add() if argv[0] == "add" else cmd_save()
+    cmds = {"add": cmd_add, "save": cmd_save, "use": cmd_use, "rm": cmd_rm}
+    if argv[0] in cmds and len(argv) == 2:
+        return cmds[argv[0]](argv[1])
+    if len(argv) == 1 and argv[0] in meta():
+        return cmd_use(argv[0])
+    die("Usage : ccx [ls | add [nom] | save <nom> | use <nom> | rm <nom>]")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
