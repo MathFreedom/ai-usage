@@ -1,13 +1,14 @@
-// AI Usage — menu bar panel showing Claude and Codex usage limits, with Codex account switching.
-// Data: Claude from the usage API (Claude Code's Keychain token), falling back to
-//       ~/.claude/usage-cache.json (written by claude/statusline.sh),
-//       Codex from `cx json` (bin/cx). Build with ./build.sh.
+// AI Usage — menu bar panel showing Claude and Codex usage limits, with account switching for both.
+// Data: Claude accounts from `ccx json` (bin/ccx); with a single Claude account, the usage API
+//       (Claude Code's Keychain token), falling back to ~/.claude/usage-cache.json (claude/statusline.sh).
+//       Codex accounts from `cx json` (bin/cx). Build with ./build.sh.
 import AppKit
 import ServiceManagement
 import SwiftUI
 
 let home = NSHomeDirectory()
 let cxPath = home + "/.local/bin/cx"
+let ccxPath = home + "/.local/bin/ccx"
 let claudeCachePath = home + "/.claude/usage-cache.json"
 
 // MARK: - Data
@@ -19,7 +20,8 @@ struct UsageWindow: Identifiable {
     let resetAt: Date?
 }
 
-struct CodexAccount: Identifiable {
+struct Account: Identifiable {
+    let brand: Brand
     let name: String
     let email: String
     let plan: String
@@ -27,8 +29,10 @@ struct CodexAccount: Identifiable {
     let error: String?
     let limitReached: Bool
     let windows: [UsageWindow]
-    let resets: [Date]  // expiry dates of available free "full reset" credits
+    let resets: [Date]  // expiry dates of available free "full reset" credits (Codex)
+    let lastSeen: Date?  // set when usage is the last known one (inactive Claude account, expired token)
     var id: String { name }
+    var key: String { "\(brand.resource):\(name)" }
     var worst: UsageWindow? { windows.max { $0.percent < $1.percent } }
 }
 
@@ -41,12 +45,14 @@ func windowLabel(seconds: Int) -> String {
 }
 
 func planName(_ plan: String) -> String {
-    ["prolite": "Pro Lite", "pro": "Pro", "plus": "Plus", "team": "Team", "free": "Free"][plan] ?? plan.capitalized
+    ["prolite": "Pro Lite", "pro": "Pro", "plus": "Plus", "team": "Team", "free": "Free", "max": "Max"][plan] ?? plan.capitalized
 }
 
 enum Brand {
     case claude, openai
     var resource: String { self == .claude ? "claude" : "openai" }
+    var product: String { self == .claude ? "Claude Code" : "Codex" }
+    var tool: String { self == .claude ? ccxPath : cxPath }
     var fallbackSymbol: String { self == .claude ? "sparkle" : "chevron.left.forwardslash.chevron.right" }
     // Template images copied from the Claude and ChatGPT apps by build.sh, loaded once
     var image: NSImage? { self == .claude ? Brand.claudeImage : Brand.openaiImage }
@@ -97,10 +103,11 @@ struct ResetLine: View {
     }
 }
 
-func runCx(_ args: [String]) -> Data {
+/// Runs bin/cx or bin/ccx (Python scripts) and returns stdout.
+func runTool(_ path: String, _ args: [String]) -> Data {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-    process.arguments = [cxPath] + args
+    process.arguments = [path] + args
     let out = Pipe()
     process.standardOutput = out
     process.standardError = FileHandle.nullDevice
@@ -123,7 +130,7 @@ func shortDate(_ date: Date) -> String {
     return f.string(from: date)
 }
 
-func parseCodex(_ data: Data) -> [CodexAccount]? {
+func parseCodex(_ data: Data) -> [Account]? {
     guard let list = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return nil }
     return list.map { a in
         let windows = (a["windows"] as? [[String: Any]] ?? []).map { w in
@@ -132,7 +139,8 @@ func parseCodex(_ data: Data) -> [CodexAccount]? {
                 percent: Int(number(w["used_percent"]) ?? 0),
                 resetAt: number(w["reset_at"]).map { Date(timeIntervalSince1970: $0) })
         }
-        return CodexAccount(
+        return Account(
+            brand: .openai,
             name: a["name"] as? String ?? "?",
             email: a["email"] as? String ?? "",
             plan: a["plan"] as? String ?? "",
@@ -140,7 +148,33 @@ func parseCodex(_ data: Data) -> [CodexAccount]? {
             error: a["error"] as? String,
             limitReached: a["limit_reached"] as? Bool ?? false,
             windows: windows,
-            resets: (a["resets"] as? [String] ?? []).compactMap(parseISODate))
+            resets: (a["resets"] as? [String] ?? []).compactMap(parseISODate),
+            lastSeen: nil)
+    }
+}
+
+func parseClaude(_ data: Data) -> [Account]? {
+    guard let list = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return nil }
+    return list.map { a in
+        let windows: [UsageWindow] = (a["windows"] as? [[String: Any]] ?? []).map { w in
+            let reset = (w["resets_at"] as? String).flatMap(parseISODate)
+            let elapsed = reset.map { $0 < Date() } ?? false  // last known usage from a window that has reset
+            return UsageWindow(
+                label: w["label"] as? String ?? "?",
+                percent: elapsed ? 0 : Int(number(w["percent"]) ?? 0),
+                resetAt: elapsed ? nil : reset)
+        }
+        return Account(
+            brand: .claude,
+            name: a["name"] as? String ?? "?",
+            email: a["email"] as? String ?? "",
+            plan: a["plan"] as? String ?? "",
+            active: a["active"] as? Bool ?? false,
+            error: a["error"] as? String,
+            limitReached: false,
+            windows: windows,
+            resets: [],
+            lastSeen: number(a["last_seen"]).map { Date(timeIntervalSince1970: $0) })
     }
 }
 
@@ -220,11 +254,13 @@ func loadClaude() -> (windows: [UsageWindow], updated: Date?) {
 final class UsageModel: ObservableObject {
     @Published var claude: [UsageWindow] = []
     @Published var claudeUpdated: Date?
-    @Published var codex: [CodexAccount] = []
+    @Published var codex: [Account] = []
     @Published var codexFailed = false
+    @Published var claudeAccounts: [Account] = []  // from ccx; rows shown once 2+ accounts are saved
     @Published var loading = false
-    @Published var switching: String?
-    @Published var switchNote: String?  // e.g. apps that must be restarted to follow the switch
+    @Published var switching: String?  // Account.key being switched to
+    @Published var notes: [Brand: String] = [:]  // e.g. apps or sessions to restart after a switch
+    private var expectedClaude: String?  // account chosen in the app, to detect a switch undone by a session
     @Published var menuBarImage = NSImage()
     private var lastRefresh = Date.distantPast
     private var timer: Timer?
@@ -261,7 +297,15 @@ final class UsageModel: ObservableObject {
             }
         }
         Task.detached {
-            let accounts = parseCodex(runCx(["json"]))
+            let accounts = parseClaude(runTool(ccxPath, ["json"]))
+            await MainActor.run {
+                if let accounts { self.claudeAccounts = accounts }
+                self.checkClaudeSwitch()
+                self.updateMenuBarImage()
+            }
+        }
+        Task.detached {
+            let accounts = parseCodex(runTool(cxPath, ["json"]))
             await MainActor.run {
                 self.loading = false
                 self.codexFailed = accounts == nil
@@ -271,27 +315,37 @@ final class UsageModel: ObservableObject {
         }
     }
 
-    func switchTo(_ account: CodexAccount) {
+    /// An open Claude Code session refreshing its token can write the previous account back.
+    private func checkClaudeSwitch() {
+        guard let expected = expectedClaude,
+              let active = claudeAccounts.first(where: \.active), active.name != expected else { return }
+        notes[.claude] = "An open Claude Code session switched back to \(active.name). Close it, then switch again."
+        expectedClaude = nil
+    }
+
+    func switchTo(_ account: Account) {
         guard !account.active, switching == nil else { return }
-        switching = account.name
-        switchNote = nil
+        switching = account.key
+        notes[account.brand] = nil
         Task.detached {
-            let output = String(decoding: runCx(["use", account.name]), as: UTF8.self)
+            let output = String(decoding: runTool(account.brand.tool, ["use", account.name]), as: UTF8.self)
             let note = output.split(separator: "\n")
                 .first { $0.hasPrefix("NOTE: ") }
                 .map { String($0.dropFirst(6)) }
             await MainActor.run {
                 self.switching = nil
-                self.switchNote = note
+                self.notes[account.brand] = note
+                if account.brand == .claude { self.expectedClaude = account.name }
                 self.refresh()
             }
         }
     }
 
-    func addAccount() {
+    func addAccount(_ brand: Brand) {
         // A .command file opens in Terminal without needing Automation permission.
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("ai-usage-add-account.command")
-        let script = "#!/bin/zsh\nexport PATH=\"$HOME/.local/bin:$PATH\"\ncx add\necho\nread -k 1 '?Press any key to close'\n"
+        let tool = brand == .claude ? "ccx" : "cx"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("ai-usage-add-\(tool).command")
+        let script = "#!/bin/zsh\nexport PATH=\"$HOME/.local/bin:$PATH\"\n\(tool) add\necho\nread -k 1 '?Press any key to close'\n"
         try? script.write(to: url, atomically: true, encoding: .utf8)
         try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         NSWorkspace.shared.open(url)
@@ -421,7 +475,7 @@ struct UsageBar: View {
 }
 
 struct AccountRow: View {
-    let account: CodexAccount
+    let account: Account
     let switching: Bool
     let action: () -> Void
     @State private var hover = false
@@ -457,6 +511,10 @@ struct AccountRow: View {
                     }
                     .padding(.leading, 22)
                 }
+                if let lastSeen = account.lastSeen {
+                    Text("Last seen \(resetDate(lastSeen))")
+                        .font(.system(size: 10)).foregroundStyle(.tertiary).padding(.leading, 22)
+                }
                 if let first = account.resets.first {
                     HStack {
                         Label("\(account.resets.count) free reset\(account.resets.count > 1 ? "s" : "")",
@@ -479,7 +537,34 @@ struct AccountRow: View {
         .buttonStyle(.plain)
         .onHover { hover = $0 }
         .padding(.horizontal, -8)
-        .help(account.active ? "Active account" : "Switch Codex to \(account.name)")
+        .help(account.active ? "Active account" : "Switch \(account.brand.product) to \(account.name)")
+    }
+}
+
+struct AccountList: View {
+    @ObservedObject var model: UsageModel
+    let accounts: [Account]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(accounts) { account in
+                AccountRow(account: account, switching: model.switching == account.key) {
+                    model.switchTo(account)
+                }
+            }
+        }
+    }
+}
+
+struct NoteLine: View {
+    let text: String?
+
+    var body: some View {
+        if let text {
+            Label(text, systemImage: "info.circle")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -499,7 +584,8 @@ struct PanelView: View {
                 Text("Usage").font(.system(size: 15, weight: .bold))
                 Spacer()
                 Menu {
-                    Button("Codex account…", action: model.addAccount)
+                    Button("Claude account…") { model.addAccount(.claude) }
+                    Button("Codex account…") { model.addAccount(.openai) }
                 } label: {
                     Image(systemName: "plus")
                 }
@@ -517,29 +603,24 @@ struct PanelView: View {
             }
             .padding(.horizontal, 2)
 
-            Card("Claude", brand: .claude, note: claudeNote) {
-                if model.claude.isEmpty {
-                    Text("No data yet — open Claude Code").font(.system(size: 11)).foregroundStyle(.secondary)
+            Card("Claude", brand: .claude, note: model.claudeAccounts.count > 1 ? nil : claudeNote) {
+                if model.claudeAccounts.count > 1 {
+                    AccountList(model: model, accounts: model.claudeAccounts)
+                } else {
+                    if model.claude.isEmpty {
+                        Text("No data yet — open Claude Code").font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                    ForEach(model.claude) { UsageBar(window: $0) }
                 }
-                ForEach(model.claude) { UsageBar(window: $0) }
+                NoteLine(text: model.notes[.claude])
             }
 
             Card("Codex", brand: .openai) {
                 if model.codexFailed {
                     Text("Couldn't load accounts").font(.system(size: 11)).foregroundStyle(.red)
                 }
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(model.codex) { account in
-                        AccountRow(account: account, switching: model.switching == account.name) {
-                            model.switchTo(account)
-                        }
-                    }
-                }
-                if let note = model.switchNote {
-                    Label(note, systemImage: "info.circle")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                }
+                AccountList(model: model, accounts: model.codex)
+                NoteLine(text: model.notes[.openai])
             }
 
             HStack {
