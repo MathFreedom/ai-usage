@@ -265,7 +265,8 @@ final class UsageModel: ObservableObject {
     private var lastRefresh = Date.distantPast
     private var timer: Timer?
     private var auth: ClaudeAuth?  // cached until it expires or fails, to skip a `security` run per refresh
-    private var menuBarItems: [MenuBarLabel.Item]?
+    private var menuBarKey: String?
+    private var appearanceObservation: NSKeyValueObservation?
 
     init() {
         refresh()
@@ -286,23 +287,18 @@ final class UsageModel: ObservableObject {
         loading = true
         lastRefresh = Date()
         Task {
-            if auth?.valid != true { auth = await Task.detached { claudeAuth() }.value }
-            guard let token = auth?.token else { return }
-            if let live = await fetchClaudeLive(token: token) {
-                self.claude = live
-                self.claudeUpdated = Date()
-                self.updateMenuBarImage()
+            // Saved Claude accounts (ccx) already carry the active account's live usage; reading the
+            // usage API here too would double the calls on a rate-limited endpoint.
+            let accounts = await Task.detached { parseClaude(runTool(ccxPath, ["json"])) }.value
+            if let accounts { claudeAccounts = accounts }
+            checkClaudeSwitch()
+            if let active = claudeAccounts.first(where: \.active) {
+                claude = active.windows
+                claudeUpdated = active.lastSeen ?? Date()
             } else {
-                auth = nil  // revoked or rotated by Claude Code: re-read the Keychain next time
+                await refreshClaudeFromKeychain()
             }
-        }
-        Task.detached {
-            let accounts = parseClaude(runTool(ccxPath, ["json"]))
-            await MainActor.run {
-                if let accounts { self.claudeAccounts = accounts }
-                self.checkClaudeSwitch()
-                self.updateMenuBarImage()
-            }
+            updateMenuBarImage()
         }
         Task.detached {
             let accounts = parseCodex(runTool(cxPath, ["json"]))
@@ -312,6 +308,18 @@ final class UsageModel: ObservableObject {
                 if let accounts { self.codex = accounts }
                 self.updateMenuBarImage()
             }
+        }
+    }
+
+    /// No account saved with ccx: read the usage API with Claude Code's own token.
+    private func refreshClaudeFromKeychain() async {
+        if auth?.valid != true { auth = await Task.detached { claudeAuth() }.value }
+        guard let token = auth?.token else { return }
+        if let live = await fetchClaudeLive(token: token) {
+            claude = live
+            claudeUpdated = Date()
+        } else {
+            auth = nil  // revoked or rotated by Claude Code: re-read the Keychain next time
         }
     }
 
@@ -351,6 +359,20 @@ final class UsageModel: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
+    /// Appearance of the menu bar itself (it follows the wallpaper, not the app), read from the
+    /// status item's window; re-renders the label whenever it changes.
+    private func menuBarIsDark() -> Bool {
+        if let window = NSApp.windows.first(where: { $0.className.contains("StatusBarWindow") }) {
+            if appearanceObservation == nil {
+                appearanceObservation = window.observe(\.effectiveAppearance) { [weak self] _, _ in
+                    Task { @MainActor in self?.updateMenuBarImage() }
+                }
+            }
+            return window.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        }
+        return NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+
     private func updateMenuBarImage() {
         var items: [MenuBarLabel.Item] = []
         if let pct = claude.map(\.percent).max() {
@@ -359,13 +381,24 @@ final class UsageModel: ObservableObject {
         if let worst = codex.first(where: \.active)?.worst {
             items.append(.init(brand: .openai, percent: worst.percent))
         }
-        guard items != menuBarItems else { return }
-        menuBarItems = items
-        let alert = items.contains { $0.percent >= 80 }
-        let renderer = ImageRenderer(content: MenuBarLabel(items: items, color: alert ? .red : .black))
+        // Dev aid: AI_USAGE_FAKE_PERCENTS="85,0" forces the label values (Claude, Codex).
+        if let fake = ProcessInfo.processInfo.environment["AI_USAGE_FAKE_PERCENTS"] {
+            let values = fake.split(separator: ",").compactMap { Int($0) }
+            items = zip([Brand.claude, .openai], values).map { .init(brand: $0, percent: $1) }
+        }
+        // Each logo gets its own color; neutral items must still match the menu bar. A template
+        // image does that by itself but can't hold colors, so colored labels are rendered with an
+        // explicit neutral color picked from the menu bar's appearance.
+        let colored = items.contains { $0.percent >= 50 }
+        let dark = colored && menuBarIsDark()
+        let key = items.map { "\($0.brand.resource)\($0.percent)" }.joined(separator: ",") + "|\(colored)|\(dark)"
+        guard key != menuBarKey else { return }
+        menuBarKey = key
+        let label = MenuBarLabel(items: items, neutral: dark ? .white : .black, colored: colored)
+        let renderer = ImageRenderer(content: label)
         renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
         guard let image = renderer.nsImage else { return }
-        image.isTemplate = !alert  // template = follows the menu bar's light/dark appearance
+        image.isTemplate = !colored
         menuBarImage = image
     }
 }
@@ -373,9 +406,15 @@ final class UsageModel: ObservableObject {
 // MARK: - Views
 
 struct MenuBarLabel: View {
-    struct Item: Equatable { let brand: Brand; let percent: Int }
+    struct Item { let brand: Brand; let percent: Int }
     let items: [Item]
-    let color: Color
+    let neutral: Color
+    let colored: Bool  // false: template rendering, everything in `neutral`
+
+    private func color(_ percent: Int) -> Color {
+        guard colored else { return neutral }
+        return percent >= 80 ? .red : percent >= 50 ? .orange : neutral
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -387,9 +426,10 @@ struct MenuBarLabel: View {
                     Logo(brand: items[i].brand, size: 13)
                     Text("\(items[i].percent)%").font(.system(size: 12, weight: .medium)).monospacedDigit()
                 }
+                .foregroundStyle(color(items[i].percent))
             }
         }
-        .foregroundStyle(color)
+        .foregroundStyle(neutral)
         .padding(.vertical, 2)
     }
 }
