@@ -13,7 +13,7 @@ cat > "$app/Contents/Info.plist" <<'EOF'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleIdentifier</key><string>local.mathis.ai-usage</string>
+  <key>CFBundleIdentifier</key><string>io.github.mathfreedom.ai-usage</string>
   <key>CFBundleName</key><string>AI Usage</string>
   <key>CFBundleExecutable</key><string>AIUsage</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -25,7 +25,7 @@ cat > "$app/Contents/Info.plist" <<'EOF'
 </plist>
 EOF
 
-xcrun swiftc -parse-as-library -O -swift-version 5 -target arm64-apple-macosx14.0 \
+xcrun swiftc -parse-as-library -O -swift-version 5 -target "$(uname -m)-apple-macosx14.0" \
   AIUsage.swift -o "$app/Contents/MacOS/AIUsage"
 codesign --force --sign - "$app"
 echo "Built $app"

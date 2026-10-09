@@ -1,11 +1,10 @@
 # AGENTS.md — AI Usage
 
-Context for coding agents (Claude Code, Codex) working on this repo. The owner (Mathis) speaks
-French: answer in French; UI labels stay in English (his choice).
+Context for coding agents (Claude Code, Codex) and contributors working on this repo.
 
 ## What this is
 
-Personal macOS tooling to watch Claude and Codex usage limits and to juggle several accounts of each.
+macOS tooling to watch Claude and Codex usage limits and to switch between several accounts of each.
 
 | Part | Path | Installed as |
 |---|---|---|
@@ -27,8 +26,7 @@ Edits in the repo are live for `cx`, `ccx` and the status line (symlinks). The a
   the active Claude and Codex accounts). One color per logo: neutral < 50, orange ≥ 50, red ≥ 80.
   All neutral → template image (follows the menu bar by itself). Any color → non-template image
   whose neutral color is picked from the menu bar's own appearance (status item window
-  `effectiveAppearance`, observed via KVO). `AI_USAGE_FAKE_PERCENTS="85,0"` forces the values
-  (`open --env AI_USAGE_FAKE_PERCENTS=85,0 ~/Applications/AI\ Usage.app`).
+  `effectiveAppearance`, observed via KVO).
 - Logos are the monochrome tray templates shipped inside `/Applications/Claude.app`
   (`TrayIconTemplate@3x.png`) and `/Applications/ChatGPT.app` (`chatgptTemplate@2x.png`), copied
   into the bundle by `build.sh`; SF Symbol fallback if missing. Don't commit those images.
@@ -44,8 +42,9 @@ Edits in the repo are live for `cx`, `ccx` and the status line (symlinks). The a
   go through `tr(en, fr)`, limit names through `windowName`, English messages printed by cx/ccx
   through `localized` (regex table — add new CLI messages there). The panel is rebuilt with
   `.id(language)` when it changes. Dates use the language's locale (en_GB / fr_FR).
+  CLI output stays English.
 - Refresh: every 10 min (timer tolerance 60 s, energy), and when the panel window becomes key if data is older than 30 s.
-- Design brief from the owner: Apple look, discreet, sober. Colors by percentage only:
+- Design: Apple look, discreet, sober. Colors by percentage only:
   green < 50, orange ≥ 50, red ≥ 80. Reset line = "Resets in 3h 26m" left (secondary) + exact
   date right (tertiary, "today 19:30" / "Thu 8 Oct, 06:00", en_GB format).
 
@@ -61,8 +60,7 @@ Edits in the repo are live for `cx`, `ccx` and the status line (symlinks). The a
 
 **Never call** `.../rate-limit-reset-credits/consume` (or the app-server `account/rateLimitResetCredit/consume`):
 it spends a reset. Claude's free reset (shown on claude.ai → Settings → Usage) is NOT exposed by
-`/api/oauth/usage`; its endpoint is unknown (claude.ai web API, cookie auth). The owner said not
-to pursue it unless easy.
+`/api/oauth/usage`; its endpoint is unknown (claude.ai web API, cookie auth).
 
 `/api/oauth/usage` is **rate limited** (HTTP 429 with `retry-after`, ~5 min) when polled often:
 `ccx` re-reads it at most every 2 minutes per account, caches identities per token, and the app
@@ -126,7 +124,7 @@ Commands: `ccx` (list + usage), `ccx save [name]`, `ccx add [name]`, `ccx use <n
 - `ccx use`: write `Claude Code-credentials` + replace only `oauthAccount` in `~/.claude.json`
   (atomic, keeps file mode), verify via profile, print `NOTE: Restart open Claude Code sessions (N
   running)…` (helpers `daemon run`, `--bg-pty-host`, `--bg-spare` are not counted).
-- Inactive accounts: their tokens are **never refreshed by ccx** (owner's decision); usage shown is
+- Inactive accounts: their tokens are **never refreshed by ccx** (by design); usage shown is
   the last known one, flagged `last_seen`, reset to 0 once its window has passed.
 - Open Claude Code sessions keep the old token in memory and, when they refresh it, may write the
   old account back. The app remembers the account chosen in the panel and shows a note if the
@@ -135,27 +133,26 @@ Commands: `ccx` (list + usage), `ccx save [name]`, `ccx add [name]`, `ccx use <n
 
 ## Claude Code status line (`claude/statusline.sh`)
 
-Output: `Opus 5.5 │ cache 47m │ session: 3h29 5% │ weekly: 5d 2%` (owner chose this exact
-English format; colors by %). `refreshInterval: 60` in `~/.claude/settings.json`.
+Output: `Opus 5.5 │ cache 47m │ session: 3h29 5% │ weekly: 5d 2%` (colors by %). `refreshInterval: 60` in `~/.claude/settings.json`.
 
 - Reads the stdin JSON: `model.display_name`, `prompt_cache.{warm,expires_at}`,
   `rate_limits.{five_hour,seven_day}.{used_percentage,resets_at}`.
-- Prompt cache TTL is 1h on this account (5 min when in overage); every request refreshes it,
-  so it sits at ~59–60m during active chatting.
-- Forwards the payload to Orca's hook (`~/.orca/agent-hooks/claude-statusline.sh`) in the
-  background — Orca originally owned the status line; keep this or Orca integration breaks.
-  Orca may rewrite `settings.json` on update; `install.sh` restores the setting.
+- Prompt cache TTL comes from the payload (1h on subscriptions, 5 min in overage); every request
+  refreshes it, so it sits at ~59–60m during active chatting.
+- Chaining: if another tool owned the status line, `install.sh` saves its command to
+  `~/.config/ai-usage/statusline-chain`, and the script feeds it every payload in the background
+  so that integration keeps working.
 - Writes `~/.claude/usage-cache.json` by **merging per window**, not overwriting: every Claude
   Code session reports its own last-seen snapshot and idle sessions report stale ones (e.g. a
   snapshot without `five_hour`). Rule: later `resets_at` wins; same window → higher % wins.
 
-## Owner environment notes
+## Screenshots
 
-- `CLAUDE_CODE_OAUTH_TOKEN` used to be exported in `~/.zshrc` and forced the wrong Claude
-  account; it was commented out. Apps launched before that (e.g. Cursor) still carry it until
-  restarted.
-- GitHub: personal account `MathFreedom` (repo is private). Do not use the work account.
-- SwiftBar + `~/.swiftbar-plugins/ai-usage.5m.py` were a first prototype, now unused.
+`tools/screenshots/render.sh` renders `docs/screenshots/` from the real SwiftUI views
+(`PanelView`, `MenuBarLabel`) with fictional data, on a reconstructed desktop (mesh gradient
+wallpaper, menu bar). It compiles `app/AIUsage.swift` with `-D SCREENSHOTS`, which drops the
+app's `@main` and uses `UsageModel(live: false)`; the UI is forced to English. Never commit
+screenshots of real accounts.
 
 ## Ideas / not done
 

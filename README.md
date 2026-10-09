@@ -1,66 +1,92 @@
 # AI Usage
 
-Suivi de l'usage Claude et Codex sur macOS, et bascule entre plusieurs comptes Claude et Codex.
+Your Claude and Codex usage limits, one glance away in the macOS menu bar — and one click to
+switch between your accounts.
 
-- **App de la barre de menus** (`app/`) — panneau SwiftUI : limites de chaque compte Claude (5h,
-  weekly, par modèle) et Codex (avec resets gratuits), bascule de compte en un clic.
-- **`cx`** (`bin/cx`) et **`ccx`** (`bin/ccx`) — comptes Codex et Claude Code en ligne de commande.
-- **Status line Claude Code** (`claude/statusline.sh`) — `Opus 5.5 │ cache 47m │ session: 3h29 5% │ weekly: 5d 2%`.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/desktop-dark.jpg">
+    <img src="docs/screenshots/desktop-light.jpg" alt="AI Usage panel open below the menu bar" width="820">
+  </picture>
+</p>
 
-## Installation
+- **Menu bar** — the most used limit of each provider, colored only when it matters
+  (orange from 50 %, red from 80 %).
+- **Panel** — every limit with its countdown and exact reset time: Claude's 5-hour, weekly and
+  per-model windows, Codex's windows and free resets.
+- **Accounts** — save several Claude Code and Codex accounts, switch with a click or from the
+  terminal (`ccx`, `cx`).
+- **Status line** for Claude Code: `Opus 5.5 │ cache 47m │ session: 3h29 5% │ weekly: 5d 2%`.
+- **Settings** (⚙︎): open at login, English or French.
+
+## Install
+
+Requires macOS 14+, the Xcode Command Line Tools (`xcode-select --install`) and `jq`.
+Claude Code and the Codex CLI are each optional.
 
 ```sh
+git clone https://github.com/MathFreedom/ai-usage && cd ai-usage
 ./install.sh
 ```
 
-Prérequis : macOS 14+, Xcode Command Line Tools (`xcode-select --install`), `jq`, Codex CLI.
-Les logos sont copiés depuis les apps Claude et ChatGPT si elles sont installées.
-
-## `cx` — comptes Codex
-
-```sh
-cx                 # liste les comptes avec leur usage (● = actif)
-cx save <nom>      # enregistre le compte actuellement connecté
-cx add [nom]       # connecte un autre compte (navigateur), sans toucher au compte actif
-cx use <nom>       # bascule (ou simplement : cx <nom>)
-cx rm <nom>        # retire un compte de la liste
-```
-
-Les identifiants sont stockés dans `~/.codex-accounts/` (droits 600), **jamais dans ce dépôt**.
-
-### Comment marche la bascule
-
-Codex lit `~/.codex/auth.json`, mais chaque processus Codex garde le compte en mémoire.
-La commande `codex` se rattache au daemon app-server partagé : `cx use` remplace donc
-`auth.json` (après y avoir resynchronisé les jetons à jour du compte actif), redémarre le
-daemon, puis lui demande (`account/read` via sa socket) quel compte il a chargé.
-
-L'app ChatGPT (Codex) et l'extension Cursor ont leur propre serveur : il faut les relancer.
-
-## `ccx` — comptes Claude Code
+This builds `~/Applications/AI Usage.app`, links `cx` and `ccx` into `~/.local/bin` (add it to
+your `PATH` if needed) and sets the Claude Code status line. A status line you already had keeps
+running in the background, so its integrations keep working. Then save the accounts you're
+signed in with:
 
 ```sh
-ccx                # liste les comptes avec leur usage (● = actif)
-ccx save [nom]     # enregistre le compte actuellement connecté
-ccx add [nom]      # connecte un autre compte (navigateur), sans toucher au compte actif
-ccx use <nom>      # bascule (ou simplement : ccx <nom>)
-ccx rm <nom>       # retire un compte de la liste
+ccx save    # Claude Code
+cx save     # Codex
 ```
 
-Chaque compte a sa propre entrée dans le Trousseau (`ai-usage-claude:<nom>`). Les sessions
-Claude Code déjà ouvertes gardent l'ancien compte jusqu'à leur relance. L'usage des comptes
-inactifs est le dernier connu (leurs jetons ne sont jamais renouvelés par `ccx`).
+## Accounts from the terminal
 
-## Sources de données
+| | Claude Code | Codex |
+|---|---|---|
+| List with usage | `ccx` | `cx` |
+| Save the current account | `ccx save [name]` | `cx save [name]` |
+| Add another account (browser sign-in) | `ccx add [name]` | `cx add [name]` |
+| Switch | `ccx use <name>` | `cx use <name>` |
+| Forget | `ccx rm <name>` | `cx rm <name>` |
 
-| Donnée | Source |
-|---|---|
-| Usage Claude | `GET api.anthropic.com/api/oauth/usage` avec le jeton de Claude Code (Trousseau), sinon `~/.claude/usage-cache.json` écrit par la status line |
-| Usage Codex | `GET chatgpt.com/backend-api/wham/usage` par compte |
-| Resets gratuits Codex | `GET chatgpt.com/backend-api/wham/rate-limit-reset-credits` (lecture seule) |
+Adding an account never signs out the active one. After a switch, restart Claude Code sessions
+that were already open; `cx` restarts the Codex daemon itself, but the ChatGPT app and IDE
+extensions need a restart.
 
-## Développement
+## How it works
+
+- **Usage** is read from the endpoints the official clients use:
+  `api.anthropic.com/api/oauth/usage` for Claude, `chatgpt.com/backend-api/wham/usage` for Codex.
+  Nothing is ever consumed — free resets are only displayed.
+- **Credentials stay on your Mac.** Claude accounts are kept in the login Keychain
+  (`ai-usage-claude:<name>`), Codex accounts in `~/.codex-accounts/` (mode 600). Inactive Claude
+  accounts show their last known usage: their tokens are never refreshed in the background.
+- **Logos** are taken from the Claude and ChatGPT apps when installed; SF Symbols otherwise.
+
+[`AGENTS.md`](AGENTS.md) documents the internals.
+
+## Uninstall
+
+Turn off **Open at Login** in the app's settings, then:
 
 ```sh
-app/build.sh && pkill -x AIUsage; open ~/Applications/AI\ Usage.app
+osascript -e 'quit app "AI Usage"'
+rm -rf ~/Applications/AI\ Usage.app ~/.local/bin/cx ~/.local/bin/ccx
+rm -rf ~/.codex-accounts ~/.config/ai-usage ~/.claude/usage-cache.json
+# Claude Code status line: remove it (or put your previous one back)
+tmp=$(mktemp) && jq 'del(.statusLine)' ~/.claude/settings.json > "$tmp" && mv "$tmp" ~/.claude/settings.json
+rm ~/.claude/statusline-cache.sh
 ```
+
+Saved Claude accounts live in Keychain Access under `ai-usage-claude:`; delete them there.
+
+## Disclaimer
+
+AI Usage is an unofficial personal project, not affiliated with or endorsed by Anthropic or
+OpenAI. Claude is a trademark of Anthropic, PBC; ChatGPT, Codex and OpenAI are trademarks of
+OpenAI. It relies on undocumented endpoints that may change at any time. Only use accounts that
+are yours, within each provider's terms.
+
+## License
+
+[MIT](LICENSE)

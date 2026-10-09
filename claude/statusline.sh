@@ -1,12 +1,13 @@
 #!/bin/sh
 # Status line: model │ minutes left before the prompt cache expires │ 5h and 7-day usage limits.
-# Also forwards the payload to Orca's status line hook so its integration keeps working.
+# If another tool owned the status line before (see install.sh), its command still receives
+# every payload, in the background, so its integration keeps working.
 
 input=$(cat)
 
-orca="$HOME/.orca/agent-hooks/claude-statusline.sh"
-if [ -x "$orca" ]; then
-  printf '%s' "$input" | /bin/sh "$orca" >/dev/null 2>&1 &
+chain=$(cat "$HOME/.config/ai-usage/statusline-chain" 2>/dev/null)
+if [ -n "$chain" ] && [ -z "$AI_USAGE_CHAINED" ]; then  # never chain into ourselves
+  printf '%s' "$input" | AI_USAGE_CHAINED=1 /bin/sh -c "$chain" >/dev/null 2>&1 &
 fi
 
 green='\033[32m'; yellow='\033[33m'; red='\033[31m'; bold='\033[1m'; dim='\033[2m'; reset='\033[0m'
