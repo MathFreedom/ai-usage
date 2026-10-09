@@ -45,7 +45,8 @@ func windowLabel(seconds: Int) -> String {
 }
 
 func planName(_ plan: String) -> String {
-    ["prolite": "Pro Lite", "pro": "Pro", "plus": "Plus", "team": "Team", "free": "Free", "max": "Max"][plan] ?? plan.capitalized
+    if plan == "free" { return tr("Free", "Gratuit") }
+    return ["prolite": "Pro Lite", "pro": "Pro", "plus": "Plus", "team": "Team", "max": "Max"][plan] ?? plan.capitalized
 }
 
 enum Brand {
@@ -63,6 +64,80 @@ enum Brand {
     }
 }
 
+// MARK: - Language
+
+enum Language: String, CaseIterable, Identifiable {
+    case english = "en", french = "fr"
+    static let key = "language"
+
+    /// The saved choice, else the Mac's preferred language.
+    static var current: Language {
+        if let raw = UserDefaults.standard.string(forKey: key), let saved = Language(rawValue: raw) { return saved }
+        return Locale.preferredLanguages.first?.hasPrefix("fr") == true ? .french : .english
+    }
+
+    var id: String { rawValue }
+    var name: String { self == .english ? "English" : "Français" }
+    var locale: Locale { Locale(identifier: self == .english ? "en_GB" : "fr_FR") }
+}
+
+enum Theme: String, CaseIterable, Identifiable {
+    case system, light, dark
+    static let key = "theme"
+
+    var id: String { rawValue }
+    var name: String {
+        switch self {
+        case .system: tr("Automatic", "Automatique")
+        case .light: tr("Light", "Clair")
+        case .dark: tr("Dark", "Sombre")
+        }
+    }
+    /// nil follows the system appearance.
+    var appearance: NSAppearance? {
+        switch self {
+        case .system: nil
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
+        }
+    }
+}
+
+/// The string for the current language.
+func tr(_ en: String, _ fr: String) -> String { Language.current == .french ? fr : en }
+
+/// Limit names come from the APIs in English ("5h", "Weekly", "Fable weekly").
+func windowName(_ label: String) -> String {
+    guard Language.current == .french else { return label }
+    if label == "Weekly" { return "Semaine" }
+    if label.hasSuffix(" weekly") { return label.dropLast(7) + " · semaine" }
+    return label
+}
+
+/// Messages printed in English by cx/ccx (or by the app), shown in the current language.
+func localized(_ message: String) -> String {
+    guard Language.current == .french else { return message }
+    let patterns: [(String, String)] = [
+        (#"^Restart open Claude Code sessions \((\d+) running\) to use this account\.$"#,
+         "Relancez les sessions Claude Code ouvertes ($1) pour utiliser ce compte."),
+        (#"^Restart (.+) to use this account there\.$"#, "Relancez $1 pour y utiliser ce compte."),
+        (#"^An open Claude Code session switched back to (.+)\. Close it, then switch again\.$"#,
+         "Une session Claude Code ouverte est revenue à $1. Fermez-la, puis basculez à nouveau."),
+        (#"^token expired \(cx use refreshes it\)$"#, "jeton expiré (cx use le renouvelle)"),
+        (#"^credentials missing$"#, "identifiants introuvables"),
+        (#"^API key sign-in: no plan usage$"#, "connexion par clé API : pas d’usage d’abonnement"),
+    ]
+    for (pattern, template) in patterns {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+        let range = NSRange(message.startIndex..., in: message)
+        if regex.firstMatch(in: message, range: range) != nil {
+            return regex.stringByReplacingMatches(in: message, range: range, withTemplate: template)
+                .replacingOccurrences(of: " and ", with: " et ")
+        }
+    }
+    return message
+}
+
 func usageColor(_ percent: Int) -> Color { percent >= 80 ? .red : percent >= 50 ? .orange : .green }
 
 func resetText(_ date: Date?) -> String {
@@ -70,19 +145,21 @@ func resetText(_ date: Date?) -> String {
     let s = max(0, Int(date.timeIntervalSinceNow))
     if s >= 86400 {
         let h = s % 86400 / 3600
-        return h > 0 ? "\(s / 86400)d \(h)h" : "\(s / 86400)d"
+        let day = tr("d", "j")
+        return h > 0 ? "\(s / 86400)\(day) \(h)h" : "\(s / 86400)\(day)"
     }
-    if s >= 3600 { return "\(s / 3600)h \(s % 3600 / 60)m" }
-    return "\(s / 60)m"
+    let minute = tr("m", "min")
+    if s >= 3600 { return "\(s / 3600)h \(s % 3600 / 60)\(minute)" }
+    return "\(s / 60)\(minute)"
 }
 
 func resetDate(_ date: Date?) -> String {
     guard let date else { return "" }
     let f = DateFormatter()
-    f.locale = Locale(identifier: "en_GB")
+    f.locale = Language.current.locale
     let cal = Calendar.current
-    if cal.isDateInToday(date) { f.dateFormat = "'today' HH:mm" }
-    else if cal.isDateInTomorrow(date) { f.dateFormat = "'tomorrow' HH:mm" }
+    if cal.isDateInToday(date) { f.dateFormat = tr("'today' HH:mm", "'aujourd’hui' HH:mm") }
+    else if cal.isDateInTomorrow(date) { f.dateFormat = tr("'tomorrow' HH:mm", "'demain' HH:mm") }
     else { f.dateFormat = "EEE d MMM, HH:mm" }
     return f.string(from: date)
 }
@@ -125,7 +202,7 @@ func parseISODate(_ string: String) -> Date? {
 
 func shortDate(_ date: Date) -> String {
     let f = DateFormatter()
-    f.locale = Locale(identifier: "en_GB")
+    f.locale = Language.current.locale
     f.dateFormat = "d MMM"
     return f.string(from: date)
 }
@@ -502,13 +579,13 @@ struct UsageBar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline) {
-                Text(window.label).font(.system(size: 12))
+                Text(windowName(window.label)).font(.system(size: 12))
                 Spacer()
                 Text("\(window.percent)%").font(.system(size: 12, weight: .semibold)).monospacedDigit()
             }
             Bar(percent: window.percent)
             if window.resetAt != nil {
-                ResetLine(prefix: "Resets in ", date: window.resetAt)
+                ResetLine(prefix: tr("Resets in ", "Réinitialisation dans "), date: window.resetAt)
             }
         }
     }
@@ -536,36 +613,35 @@ struct AccountRow: View {
                     if switching {
                         ProgressView().controlSize(.small)
                     } else if account.limitReached {
-                        Text("Limit reached").font(.system(size: 10, weight: .semibold)).foregroundStyle(.red)
+                        Text(tr("Limit reached", "Limite atteinte")).font(.system(size: 10, weight: .semibold)).foregroundStyle(.red)
                     } else if let worst = account.worst {
                         Text("\(worst.percent)%").font(.system(size: 12, weight: .semibold)).monospacedDigit()
                     }
                 }
                 if let error = account.error {
-                    Text(error).font(.system(size: 10)).foregroundStyle(.secondary).padding(.leading, 22)
+                    Text(localized(error)).font(.system(size: 10)).foregroundStyle(.secondary).padding(.leading, 22)
                 }
                 ForEach(account.windows) { w in
                     VStack(alignment: .leading, spacing: 4) {
                         Bar(percent: w.percent)
-                        ResetLine(prefix: "\(w.label) · resets in ", date: w.resetAt)
+                        ResetLine(prefix: windowName(w.label) + tr(" · resets in ", " · dans "), date: w.resetAt)
                     }
                     .padding(.leading, 22)
                 }
                 if let lastSeen = account.lastSeen {
-                    Text("Last seen \(resetDate(lastSeen))")
+                    Text(tr("Last seen ", "Dernier relevé ") + resetDate(lastSeen))
                         .font(.system(size: 10)).foregroundStyle(.tertiary).padding(.leading, 22)
                 }
                 if let first = account.resets.first {
                     HStack {
-                        Label("\(account.resets.count) free reset\(account.resets.count > 1 ? "s" : "")",
-                              systemImage: "arrow.counterclockwise")
+                        Label(freeResets(account.resets.count), systemImage: "arrow.counterclockwise")
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Text("expires \(shortDate(first))").foregroundStyle(.tertiary)
+                        Text(tr("expires ", "expire le ") + shortDate(first)).foregroundStyle(.tertiary)
                     }
                     .font(.system(size: 10))
                     .padding(.leading, 22)
-                    .help("Expires: " + account.resets.map(resetDate).joined(separator: ", "))
+                    .help(tr("Expires: ", "Expiration : ") + account.resets.map(resetDate).joined(separator: ", "))
                 }
             }
             .padding(8)
@@ -577,7 +653,14 @@ struct AccountRow: View {
         .buttonStyle(.plain)
         .onHover { hover = $0 }
         .padding(.horizontal, -8)
-        .help(account.active ? "Active account" : "Switch \(account.brand.product) to \(account.name)")
+        .help(account.active
+              ? tr("Active account", "Compte actif")
+              : tr("Switch \(account.brand.product) to \(account.name)", "Basculer \(account.brand.product) sur \(account.name)"))
+    }
+
+    private func freeResets(_ count: Int) -> String {
+        let s = count > 1 ? "s" : ""
+        return tr("\(count) free reset\(s)", "\(count) reset\(s) gratuit\(s)")
     }
 }
 
@@ -601,7 +684,7 @@ struct NoteLine: View {
 
     var body: some View {
         if let text {
-            Label(text, systemImage: "info.circle")
+            Label(localized(text), systemImage: "info.circle")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
         }
@@ -611,34 +694,42 @@ struct NoteLine: View {
 struct PanelView: View {
     @ObservedObject var model: UsageModel
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
+    @AppStorage(Language.key) private var language = Language.current.rawValue
+    @AppStorage(Theme.key) private var theme = Theme.system.rawValue
 
     private var claudeNote: String? {
         guard let updated = model.claudeUpdated else { return nil }
         let minutes = Int(-updated.timeIntervalSinceNow / 60)
-        return minutes < 1 ? "Just now" : minutes < 60 ? "\(minutes) min ago" : "\(minutes / 60) h ago"
+        if minutes < 1 { return tr("Just now", "À l’instant") }
+        return minutes < 60 ? tr("\(minutes) min ago", "il y a \(minutes) min") : tr("\(minutes / 60) h ago", "il y a \(minutes / 60) h")
+    }
+
+    /// The panel and its menus; the menu bar label keeps following the menu bar itself.
+    private func applyTheme() {
+        NSApp.appearance = (Theme(rawValue: theme) ?? .system).appearance
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Usage").font(.system(size: 15, weight: .bold))
+                Text(tr("Usage", "Utilisation")).font(.system(size: 15, weight: .bold))
                 Spacer()
                 Menu {
-                    Button("Claude account…") { model.addAccount(.claude) }
-                    Button("Codex account…") { model.addAccount(.openai) }
+                    Button(tr("Claude account…", "Compte Claude…")) { model.addAccount(.claude) }
+                    Button(tr("Codex account…", "Compte Codex…")) { model.addAccount(.openai) }
                 } label: {
                     Image(systemName: "plus")
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .help("Add account")
+                .help(tr("Add account", "Ajouter un compte"))
                 if model.loading {
                     ProgressView().controlSize(.small)
                 } else {
                     Button(action: model.refresh) { Image(systemName: "arrow.clockwise") }
                         .buttonStyle(.borderless)
-                        .help("Refresh")
+                        .help(tr("Refresh", "Actualiser"))
                 }
             }
             .padding(.horizontal, 2)
@@ -648,7 +739,7 @@ struct PanelView: View {
                     AccountList(model: model, accounts: model.claudeAccounts)
                 } else {
                     if model.claude.isEmpty {
-                        Text("No data yet — open Claude Code").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text(tr("No data yet — open Claude Code", "Pas encore de données — ouvrez Claude Code")).font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                     ForEach(model.claude) { UsageBar(window: $0) }
                 }
@@ -657,31 +748,47 @@ struct PanelView: View {
 
             Card("Codex", brand: .openai) {
                 if model.codexFailed {
-                    Text("Couldn't load accounts").font(.system(size: 11)).foregroundStyle(.red)
+                    Text(tr("Couldn't load accounts", "Impossible de charger les comptes")).font(.system(size: 11)).foregroundStyle(.red)
                 }
                 AccountList(model: model, accounts: model.codex)
                 NoteLine(text: model.notes[.openai])
             }
 
             HStack {
-                Toggle("Open at login", isOn: $openAtLogin)
-                    .toggleStyle(.checkbox)
-                    .onChange(of: openAtLogin) { _, enabled in
-                        let isEnabled = SMAppService.mainApp.status == .enabled
-                        guard enabled != isEnabled else { return }
-                        do {
-                            if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
-                        } catch {
-                            openAtLogin = isEnabled
-                        }
+                Menu {
+                    Toggle(tr("Open at Login", "Ouvrir à la connexion"), isOn: $openAtLogin)
+                    Picker(tr("Appearance", "Apparence"), selection: $theme) {
+                        ForEach(Theme.allCases) { Text($0.name).tag($0.rawValue) }
                     }
+                    Picker(tr("Language", "Langue"), selection: $language) {
+                        ForEach(Language.allCases) { Text($0.name).tag($0.rawValue) }
+                    }
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help(tr("Settings", "Réglages"))
                 Spacer()
-                Button("Quit") { NSApp.terminate(nil) }.buttonStyle(.borderless)
+                Button(tr("Quit", "Quitter")) { NSApp.terminate(nil) }.buttonStyle(.borderless)
             }
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
             .padding(.horizontal, 2)
+            .onChange(of: openAtLogin) { _, enabled in
+                let isEnabled = SMAppService.mainApp.status == .enabled
+                guard enabled != isEnabled else { return }
+                do {
+                    if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+                } catch {
+                    openAtLogin = isEnabled
+                }
+            }
         }
+        .id(language)  // strings are computed, not observed: rebuild the panel when the language changes
+        .onAppear { applyTheme() }
+        .onChange(of: theme) { _, _ in applyTheme() }
         .padding(12)
         .frame(width: 300)
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
