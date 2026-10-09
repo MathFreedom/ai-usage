@@ -12,7 +12,8 @@ func window(_ label: String, _ percent: Int, resetsIn h: Double) -> UsageWindow 
 }
 
 @MainActor
-func demoModel() -> UsageModel {
+/// `singleClaude`: one saved Claude account, so the card shows plain limit bars instead of rows.
+func demoModel(singleClaude: Bool) -> UsageModel {
     let model = UsageModel(live: false)
     let personal = Account(
         brand: .claude, name: "personal", email: "alex@example.com", plan: "max", active: true,
@@ -24,7 +25,7 @@ func demoModel() -> UsageModel {
         error: nil, limitReached: false,
         windows: [window("5h", 0, resetsIn: 3.5), window("Weekly", 27, resetsIn: 40)],
         resets: [], lastSeen: hours(-5))
-    model.claudeAccounts = [personal, work]
+    model.claudeAccounts = singleClaude ? [personal] : [personal, work]
     model.claude = personal.windows
     model.claudeUpdated = Date()
     model.codex = [
@@ -128,21 +129,20 @@ struct Desktop: View {
     let dark: Bool
     let label: NSImage
 
+    /// The image is as tall as the panel needs, plus a margin: no empty wallpaper below it.
     var body: some View {
-        ZStack(alignment: .top) {
-            Wallpaper(dark: dark)
-            VStack(spacing: 0) {
-                MenuBar(dark: dark, label: label)
-                HStack {
-                    Spacer()
-                    PanelChrome(model: model, dark: dark)
-                        .padding(.trailing, 262)
-                        .padding(.top, 8)
-                }
+        VStack(spacing: 0) {
+            MenuBar(dark: dark, label: label)
+            HStack {
                 Spacer()
+                PanelChrome(model: model, dark: dark)
+                    .padding(.trailing, 262)
+                    .padding(.top, 8)
             }
         }
-        .frame(width: 780, height: 690)
+        .padding(.bottom, 64)
+        .frame(width: 780)
+        .background(Wallpaper(dark: dark))
     }
 }
 
@@ -186,8 +186,8 @@ struct Screenshots {
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
         let out = CommandLine.arguments.dropFirst().first ?? "."
-        let model = demoModel()
         for (dark, suffix) in [(true, "dark"), (false, "light")] {
+            let model = demoModel(singleClaude: dark)  // one look at each Claude card layout
             let appearance: NSAppearance.Name = dark ? .darkAqua : .aqua
             try render(Desktop(model: model, dark: dark, label: menuBarLabel(dark: dark)),
                        appearance: appearance, to: "\(out)/desktop-\(suffix).png")
