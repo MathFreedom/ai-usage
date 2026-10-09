@@ -1,10 +1,10 @@
 # AI Usage
 
-Suivi de l'usage Claude et Codex sur macOS, et bascule entre plusieurs comptes Codex.
+Suivi de l'usage Claude et Codex sur macOS, et bascule entre plusieurs comptes Claude et Codex.
 
-- **App de la barre de menus** (`app/`) — panneau SwiftUI : limites Claude (5h, weekly, par modèle),
-  limites et resets gratuits de chaque compte Codex, bascule de compte en un clic.
-- **`cx`** (`bin/cx`) — gestion des comptes Codex en ligne de commande.
+- **App de la barre de menus** (`app/`) — panneau SwiftUI : limites de chaque compte Claude (5h,
+  weekly, par modèle) et Codex (avec resets gratuits), bascule de compte en un clic.
+- **`cx`** (`bin/cx`) et **`ccx`** (`bin/ccx`) — comptes Codex et Claude Code en ligne de commande.
 - **Status line Claude Code** (`claude/statusline.sh`) — `Opus 5.5 │ cache 47m │ session: 3h29 5% │ weekly: 5d 2%`.
 
 ## Installation
@@ -36,6 +36,20 @@ La commande `codex` se rattache au daemon app-server partagé : `cx use` remplac
 daemon, puis lui demande (`account/read` via sa socket) quel compte il a chargé.
 
 L'app ChatGPT (Codex) et l'extension Cursor ont leur propre serveur : il faut les relancer.
+
+## `ccx` — comptes Claude Code
+
+```sh
+ccx                # liste les comptes avec leur usage (● = actif)
+ccx save [nom]     # enregistre le compte actuellement connecté
+ccx add [nom]      # connecte un autre compte (navigateur), sans toucher au compte actif
+ccx use <nom>      # bascule (ou simplement : ccx <nom>)
+ccx rm <nom>       # retire un compte de la liste
+```
+
+Chaque compte a sa propre entrée dans le Trousseau (`ai-usage-claude:<nom>`). Les sessions
+Claude Code déjà ouvertes gardent l'ancien compte jusqu'à leur relance. L'usage des comptes
+inactifs est le dernier connu (leurs jetons ne sont jamais renouvelés par `ccx`).
 
 ## Sources de données
 

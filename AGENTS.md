@@ -5,16 +5,17 @@ French: answer in French; UI labels stay in English (his choice).
 
 ## What this is
 
-Personal macOS tooling to watch Claude and Codex usage limits and to juggle several Codex accounts.
+Personal macOS tooling to watch Claude and Codex usage limits and to juggle several accounts of each.
 
 | Part | Path | Installed as |
 |---|---|---|
 | Menu bar app (SwiftUI, single file) | `app/AIUsage.swift`, `app/build.sh` | `~/Applications/AI Usage.app` (built, ad-hoc signed) |
 | Codex account switcher (Python 3.9, stdlib only) | `bin/cx` | symlink `~/.local/bin/cx` |
+| Claude Code account switcher (Python 3.9, stdlib only) | `bin/ccx` | symlink `~/.local/bin/ccx` |
 | Claude Code status line (POSIX sh + jq) | `claude/statusline.sh` | symlink `~/.claude/statusline-cache.sh` |
 | Installer | `install.sh` | — |
 
-Edits in the repo are live for `cx` and the status line (symlinks). The app must be rebuilt:
+Edits in the repo are live for `cx`, `ccx` and the status line (symlinks). The app must be rebuilt:
 `app/build.sh && pkill -x AIUsage; open ~/Applications/AI\ Usage.app`.
 
 ## Menu bar app (`app/AIUsage.swift`)
@@ -23,13 +24,19 @@ Edits in the repo are live for `cx` and the status line (symlinks). The app must
   `swiftc -parse-as-library -swift-version 5` (Swift 5 mode on purpose: avoids Swift 6 strict
   concurrency noise). No Xcode project.
 - Menu bar label is an `ImageRenderer` image: Claude logo + %, OpenAI logo + % (worst window of
-  Claude and of the active Codex account). Template image (follows light/dark); turns red,
-  non-template, when any value is ≥ 80%.
+  the active Claude and Codex accounts). One color per logo: neutral < 50, orange ≥ 50, red ≥ 80.
+  All neutral → template image (follows the menu bar by itself). Any color → non-template image
+  whose neutral color is picked from the menu bar's own appearance (status item window
+  `effectiveAppearance`, observed via KVO). `AI_USAGE_FAKE_PERCENTS="85,0"` forces the values
+  (`open --env AI_USAGE_FAKE_PERCENTS=85,0 ~/Applications/AI\ Usage.app`).
 - Logos are the monochrome tray templates shipped inside `/Applications/Claude.app`
   (`TrayIconTemplate@3x.png`) and `/Applications/ChatGPT.app` (`chatgptTemplate@2x.png`), copied
   into the bundle by `build.sh`; SF Symbol fallback if missing. Don't commit those images.
-- Panel: header "Usage" with `+` menu (add account) and refresh; card "Claude" (bars per limit);
-  card "Codex" (one row per account, click to switch, checkmark on active, free resets line);
+- Panel: header "Usage" with `+` menu (Claude account… / Codex account…, each opens Terminal on
+  `ccx add` / `cx add`) and refresh; card "Claude" (bars per limit with one saved account, account
+  rows like Codex with two or more); card "Codex" (one row per account, click to switch,
+  checkmark on active, free resets line). Rows share `AccountRow` / `AccountList` (`Account`
+  model with a `brand`).
   footer "Open at login" (`SMAppService.mainApp`) and Quit.
 - Refresh: every 10 min (timer tolerance 60 s, energy), and when the panel window becomes key if data is older than 30 s.
 - Design brief from the owner: Apple look, discreet, sober. Colors by percentage only:
@@ -42,6 +49,7 @@ Edits in the repo are live for `cx` and the status line (symlinks). The app must
 |---|---|---|
 | Claude limits (5h, weekly, per-model weekly e.g. Fable) | `GET https://api.anthropic.com/api/oauth/usage` → `limits[]` (`kind`: `session`, `weekly_all`, `weekly_scoped` + `scope.model.display_name`) | Claude Code's OAuth token from Keychain item `Claude Code-credentials` (`claudeAiOauth.accessToken`, check `expiresAt` ms), header `anthropic-beta: oauth-2025-04-20` |
 | Claude fallback | `~/.claude/usage-cache.json` written by the status line | — |
+| Claude account identity | `GET https://api.anthropic.com/api/oauth/profile` → `account.{uuid,email}` | same OAuth token |
 | Codex usage per account | `GET https://chatgpt.com/backend-api/wham/usage` (`rate_limit.primary_window/secondary_window`: `used_percent`, `limit_window_seconds`, `reset_at`) | `Authorization: Bearer <access_token>`, `ChatGPT-Account-Id: <account_id>` from each stored `auth.json` |
 | Codex free "Full reset" credits | `GET https://chatgpt.com/backend-api/wham/rate-limit-reset-credits` (`credits[]` with `status`, `expires_at`) | same |
 
@@ -50,7 +58,11 @@ it spends a reset. Claude's free reset (shown on claude.ai → Settings → Usag
 `/api/oauth/usage`; its endpoint is unknown (claude.ai web API, cookie auth). The owner said not
 to pursue it unless easy.
 
-Plans seen: Codex Pro has only a weekly window (no 5h); `prolite` = "Pro Lite".
+`/api/oauth/usage` is **rate limited** (HTTP 429 with `retry-after`, ~5 min) when polled often:
+`ccx` re-reads it at most every 2 minutes per account, caches identities per token, and the app
+does not call it itself when ccx has accounts.
+
+Plans seen: Codex Pro has only a weekly window (no 5h); `prolite` = "Pro Lite"; Claude `max`.
 
 ## `cx` — Codex accounts
 
@@ -84,6 +96,37 @@ empirically:
   line under the Codex card.
 - Restarting the daemon may interrupt running `codex` CLI sessions.
 
+## `ccx` — Claude Code accounts
+
+Commands: `ccx` (list + usage), `ccx save [name]`, `ccx add [name]`, `ccx use <name>` / `ccx <name>`,
+`ccx rm <name>`, `ccx json` (consumed by the app).
+
+- Claude Code keeps its token in the Keychain item `Claude Code-credentials` (account = macOS user,
+  JSON `claudeAiOauth.{accessToken, refreshToken, expiresAt(ms), subscriptionType, …}`; access
+  token lives ~8 h, Claude Code refreshes and rotates it) and the profile in `~/.claude.json` →
+  `oauthAccount`. A different `CLAUDE_CONFIG_DIR` uses a different Keychain item (verified: an empty
+  config dir reports `loggedIn: false`), which is how `ccx add` logs in without touching the
+  active account (temp config dir, then the new item is read and deleted).
+- Each saved account: Keychain item `ai-usage-claude:<name>` (account `ai-usage`), value
+  `pack({credentials, oauthAccount})` = `z:` + base64(zlib(json)). Metadata without secrets
+  (email, uuid, plan, last usage, `usage_at`) in `~/.config/ai-usage/claude-accounts.json`;
+  identity cache (token hash → uuid/email) in `claude-identity-cache.json`.
+- Keychain writes go through `security -i` on stdin with `-X <hex>` so secrets never hit argv.
+  **`security -i` truncates lines around 4 KB** — hence compression for our entries; the active
+  item is written as plain JSON (≈1.2 KB → 2.5 KB hex), the format Claude Code expects.
+- Identity of an account = `/api/oauth/profile` uuid (falls back to `oauthAccount.accountUuid`).
+- `sync_active()` copies the live (rotated) credentials back to the active account's entry before
+  any switch, only when they changed.
+- `ccx use`: write `Claude Code-credentials` + replace only `oauthAccount` in `~/.claude.json`
+  (atomic, keeps file mode), verify via profile, print `NOTE: Restart open Claude Code sessions (N
+  running)…` (helpers `daemon run`, `--bg-pty-host`, `--bg-spare` are not counted).
+- Inactive accounts: their tokens are **never refreshed by ccx** (owner's decision); usage shown is
+  the last known one, flagged `last_seen`, reset to 0 once its window has passed.
+- Open Claude Code sessions keep the old token in memory and, when they refresh it, may write the
+  old account back. The app remembers the account chosen in the panel and shows a note if the
+  active account changes back.
+- The Claude desktop app has its own login and is not affected.
+
 ## Claude Code status line (`claude/statusline.sh`)
 
 Output: `Opus 5.5 │ cache 47m │ session: 3h29 5% │ weekly: 5d 2%` (owner chose this exact
@@ -110,6 +153,4 @@ English format; colors by %). `refreshInterval: 60` in `~/.claude/settings.json`
 
 ## Ideas / not done
 
-- Claude multi-account switching (Keychain item `Claude Code-credentials`). Pitfall: running
-  Claude Code sessions refresh tokens and may write the old account back to the Keychain.
 - Claude free reset credit (endpoint unknown, see above).
