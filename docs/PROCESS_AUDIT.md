@@ -48,7 +48,7 @@ report defects unrelated to it.
   writes an auditor may trigger come from the listing commands (`cx`, `ccx`, `cx json`,
   `ccx json`), as the app does every 10 minutes: refresh the active account's own saved copy
   (`~/.codex-accounts/<name>.json`, Keychain item `ai-usage-claude:<name>`), cx's lock file
-  `~/.codex-accounts/.lock`, and ccx's files in `~/.config/ai-usage/` (metadata, usage, identity
+  `~/.codex-accounts/.lock` (and its short-lived `.cx-*` temp files), and ccx's files in `~/.config/ai-usage/` (metadata, usage, identity
   cache). Anything else that writes runs with a
   temporary `HOME` (the login Keychain is then out of reach).
 - Reports each finding with file:line, a concrete failing scenario, and the minimal fix, ranked

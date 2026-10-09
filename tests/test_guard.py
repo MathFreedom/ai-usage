@@ -1,4 +1,8 @@
-"""The guard itself: a test that forgets to fake something must fail, not reach the real system."""
+"""The guard itself: a test that forgets to fake something must fail, not reach the real system.
+
+Process APIs are checked by identity, never called: an unguarded os.execv or os.fork would replace
+or duplicate the test process itself, and a silent exit could look like a passing suite."""
+import importlib
 import socket
 import subprocess
 import unittest
@@ -19,15 +23,23 @@ class GuardTest(SafeTestCase):
             with self.assertRaises(RealCallBlocked):
                 call()
 
-    def test_os_level_process_apis_are_blocked(self):
-        import os
-        calls = [lambda: os.fork(), lambda: os.forkpty(), lambda: os.popen("true"),
-                 lambda: os.posix_spawnp("true", ["true"], dict(os.environ)),
-                 lambda: os.execv("/usr/bin/true", ["true"]),
-                 lambda: os.spawnv(os.P_WAIT, "/usr/bin/true", ["true"])]
-        for call in calls:
-            with self.assertRaises(RealCallBlocked):
-                call()
+    # Written here, independently of helpers.py: dropping an entry there must fail this test.
+    REQUIRED = [
+        ("subprocess", "run"), ("subprocess", "Popen"), ("_posixsubprocess", "fork_exec"),
+        ("os", "system"), ("os", "popen"), ("os", "fork"), ("os", "forkpty"),
+        ("os", "posix_spawn"), ("os", "posix_spawnp"),
+        ("os", "execv"), ("os", "execve"), ("os", "execvp"), ("os", "execvpe"),
+        ("os", "spawnv"), ("os", "spawnve"), ("os", "spawnvp"), ("os", "spawnvpe"),
+        ("socket", "socket"), ("_socket", "socket"), ("socket", "getaddrinfo"),
+        ("socket", "gethostbyname"), ("socket", "gethostbyname_ex"), ("socket", "gethostbyaddr"),
+        ("socket", "getnameinfo"), ("socket", "create_connection"),
+        ("urllib.request", "urlopen"),
+    ]
+
+    def test_every_process_and_network_entry_point_is_guarded(self):
+        for module, name in self.REQUIRED:
+            obj = getattr(importlib.import_module(module), name)
+            self.assertTrue(getattr(obj, "ai_usage_guard", False), f"{module}.{name} is not guarded")
 
     def test_dns_is_blocked(self):
         for call in (lambda: socket.getaddrinfo("api.anthropic.com", 443),

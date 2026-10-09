@@ -30,6 +30,9 @@ EOF
 step "tests (offline, temp HOME: never touch real accounts)"
 PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -B -m unittest discover -s tests -q 2> "$tmp/tests" \
   || { cat "$tmp/tests"; fail "tests"; }
+# A suite cut short (e.g. the process replaced or killed) can exit 0 without having run: require
+# unittest's own summary.
+grep -q '^OK' "$tmp/tests" || { cat "$tmp/tests"; fail "tests did not complete"; }
 
 # Same compiler invocations as app/build.sh and tools/screenshots/render.sh, output in $tmp.
 step "app builds"

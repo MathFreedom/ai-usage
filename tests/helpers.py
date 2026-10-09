@@ -69,6 +69,7 @@ class RealCallBlocked(AssertionError):
 def _blocked(what):
     def fail(*args, **kwargs):
         raise RealCallBlocked(f"test reached a real {what}: {args[:1]}")
+    fail.ai_usage_guard = True  # lets test_guard check what is guarded without calling it
     return fail
 
 

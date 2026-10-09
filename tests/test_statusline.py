@@ -12,9 +12,11 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class StatusLineTest(SafeTestCase):
-    def run_raw(self, payload):
+    def run_raw(self, payload, keep_background=False):
         env = {"HOME": self.home, "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"}
         r = real_run(["/bin/sh", SCRIPT], input=json.dumps(payload), env=env)
+        if not keep_background:
+            kill_group(r.pid)  # nothing the script left in the background survives the test
         self.assertEqual(r.returncode, 0, r.stderr)
         return r
 
@@ -84,7 +86,7 @@ class StatusLineTest(SafeTestCase):
         os.makedirs(self.path(".config", "ai-usage"))
         with open(self.path(".config", "ai-usage", "statusline-chain"), "w") as f:
             f.write(chain + "\n")
-        r = self.run_raw(self.payload(five=(5, 12600)))
+        r = self.run_raw(self.payload(five=(5, 12600)), keep_background=True)
         # Wait for every process the run started, background chain included: a chain looping
         # into itself never finishes, so this fails instead of passing on timing luck.
         gone = wait_group_gone(r.pid)
