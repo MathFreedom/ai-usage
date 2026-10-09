@@ -22,6 +22,7 @@ par ccx : leur usage affiché est le dernier connu.
 import base64
 import calendar
 import getpass
+import hashlib
 import json
 import os
 import re
@@ -39,6 +40,8 @@ STORE_PREFIX = "ai-usage-claude:"
 STORE_ACCOUNT = "ai-usage"
 CLAUDE_JSON = os.path.expanduser("~/.claude.json")
 META = os.path.expanduser("~/.config/ai-usage/claude-accounts.json")
+IDENTITY_CACHE = os.path.expanduser("~/.config/ai-usage/claude-identity-cache.json")  # token hash → (uuid, email)
+USAGE_TTL = 120  # seconds; /api/oauth/usage is rate limited (429), so don't re-read it more often
 API = "https://api.anthropic.com/api/oauth"
 SECURITY = "/usr/bin/security"
 
@@ -148,15 +151,24 @@ def token_of(creds):
 
 
 def profile(creds):
-    """(uuid, email) of the account a credentials blob belongs to, or None."""
+    """(uuid, email) of the account a credentials blob belongs to, or None.
+    Cached per access token: the answer never changes for a given token."""
     token = token_of(creds)
     if not token:
         return None
+    key = hashlib.sha256(token.encode()).hexdigest()[:24]
+    cache = load_json(IDENTITY_CACHE, {})
+    if key in cache:
+        return tuple(cache[key])
     try:
         account = api_get("profile", token).get("account") or {}
-        return account.get("uuid"), account.get("email")
     except Exception:
         return None
+    found = (account.get("uuid"), account.get("email"))
+    cache = {k: v for k, v in cache.items() if k != key}
+    cache[key] = list(found)
+    write_json(IDENTITY_CACHE, dict(list(cache.items())[-20:]))
+    return found
 
 
 def fetch_usage(creds):
@@ -231,7 +243,9 @@ def sync_active():
     if name:
         saved = stored(name) or {}
         same_account = (account or {}).get("accountUuid") == uuid
-        store(name, creds, account if same_account else saved.get("oauthAccount"))
+        oauth_account = account if same_account else saved.get("oauthAccount")
+        if saved.get("credentials") != creds or saved.get("oauthAccount") != oauth_account:
+            store(name, creds, oauth_account)
     return name
 
 
@@ -239,9 +253,11 @@ def claude_sessions():
     """Number of running Claude Code CLI processes (they keep their token in memory)."""
     ps = subprocess.run(["ps", "-axo", "command"], capture_output=True, text=True).stdout
     count = 0
+    helpers = ("daemon run", "--bg-pty-host", "--bg-spare")  # Claude Code's own background processes
     for line in ps.splitlines():
         exe = line.split(" ", 1)[0]
-        if os.path.basename(exe) == "claude" or "/.local/share/claude/versions/" in exe:
+        is_claude = os.path.basename(exe) == "claude" or "/.local/share/claude/versions/" in exe
+        if is_claude and not any(h in line for h in helpers):
             count += 1
     return count
 
@@ -252,15 +268,20 @@ def account_rows():
     m = meta()
     names = sorted(m)
     creds = {n: (stored(n) or {}).get("credentials") for n in names}
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        live = dict(zip(names, pool.map(fetch_usage, [creds[n] for n in names])))
     now = time.time()
+    stale = [n for n in names if now - (m[n].get("usage_at") or 0) > USAGE_TTL]
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        live = dict(zip(stale, pool.map(fetch_usage, [creds[n] for n in stale])))
+    for n in names:
+        if n not in stale:
+            live[n] = m[n].get("usage") or []  # read less than USAGE_TTL ago: still current
     rows = []
     for name in names:
         entry = m[name]
         windows, last_seen = live[name], None
         if windows is not None:
-            entry["usage"], entry["usage_at"] = windows, now
+            if name in stale:
+                entry["usage"], entry["usage_at"] = windows, now
         else:
             windows, last_seen = entry.get("usage") or [], entry.get("usage_at")
         rows.append({"name": name, "email": entry.get("email") or "?", "plan": entry.get("plan") or "?",
