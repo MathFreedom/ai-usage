@@ -1,6 +1,26 @@
 # AGENTS.md — AI Usage
 
 Context for coding agents (Claude Code, Codex) and contributors working on this repo.
+Reply in the language the user writes in.
+
+## Working method
+
+Any non-trivial change, code or docs, follows [docs/PROCESS.md](docs/PROCESS.md):
+
+```
+1. Investigation (status quo + simplest strategy) → 2. /grill-me → 3. Plan Mode
+→ 4. Implementation (local commits) → 5. Independent audit until SAFE → 6. Push + PR
+```
+
+- The owner signs off at each gate; nothing is pushed before the audit is SAFE and the owner
+  says go. Merge only on the owner's say.
+- Audit protocol: [docs/PROCESS_AUDIT.md](docs/PROCESS_AUDIT.md), skill `independent-audit`;
+  grill: skill `grill-me` (both in `.claude/skills/`, linked for Codex in `.agents/skills/`).
+- Pre-flight, before every commit and in every audit: `tools/check.sh` → must end with
+  `check: OK`.
+- Engineering preferences: explicit over clever; engineered enough (neither fragile nor
+  over-abstracted); handle edge cases; flag repetition; keep existing behavior unless the change
+  is about it — no rewrite as a side effect; docs updated in the same commit as the change.
 
 ## What this is
 
