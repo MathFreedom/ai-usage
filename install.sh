@@ -26,10 +26,11 @@ case "$current" in
       echo "  $current"
       echo "Delete ~/.config/ai-usage/statusline-chain to stop it."
     fi
+    # Written through (not replaced): a settings.json symlinked from a dotfiles repo stays a link.
     tmp=$(mktemp)
     jq '.statusLine = {"type": "command", "command": "~/.claude/statusline-cache.sh", "refreshInterval": 60}' \
-      "$settings" > "$tmp" && mv "$tmp" "$settings"
-    echo "Claude Code status line configured (previous settings: $settings.bak-ai-usage)"
+      "$settings" > "$tmp" && cat "$tmp" > "$settings" && rm -f "$tmp"
+    echo "Claude Code status line configured (settings before the first install: $settings.bak-ai-usage)"
     ;;
 esac
 

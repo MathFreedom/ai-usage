@@ -17,7 +17,7 @@ switch between your accounts.
 - **Accounts** — save several Claude Code and Codex accounts, switch with a click or from the
   terminal (`ccx`, `cx`).
 - **Status line** for Claude Code: `Opus 5.5 │ cache 47m │ session: 3h29 5% │ weekly: 5d 2%`.
-- **Settings** (⚙︎): open at login, English or French.
+- **Settings** (⚙︎): open at login, appearance (automatic, light, dark), English or French.
 
 ## Install
 
@@ -72,10 +72,11 @@ Turn off **Open at Login** in the app's settings, then:
 
 ```sh
 osascript -e 'quit app "AI Usage"'
+cat ~/.config/ai-usage/statusline-chain 2>/dev/null  # your previous status line, if you had one
 rm -rf ~/Applications/AI\ Usage.app ~/.local/bin/cx ~/.local/bin/ccx
-rm -rf ~/.codex-accounts ~/.config/ai-usage ~/.claude/usage-cache.json
-# Claude Code status line: remove it (or put your previous one back)
-tmp=$(mktemp) && jq 'del(.statusLine)' ~/.claude/settings.json > "$tmp" && mv "$tmp" ~/.claude/settings.json
+rm -rf ~/.codex-accounts ~/.config/ai-usage ~/.claude/usage-cache.json ~/.claude/settings.json.bak-ai-usage
+# Claude Code status line: remove it (or set the previous one printed above)
+tmp=$(mktemp) && jq 'del(.statusLine)' ~/.claude/settings.json > "$tmp" && cat "$tmp" > ~/.claude/settings.json && rm "$tmp"
 rm ~/.claude/statusline-cache.sh
 ```
 
