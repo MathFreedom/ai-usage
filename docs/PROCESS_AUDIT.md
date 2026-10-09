@@ -47,8 +47,9 @@ report defects unrelated to it.
   change to `~/.codex`, `~/.claude.json`, `~/.claude/settings.json`, no `install.sh`. The only
   writes an auditor may trigger come from the listing commands (`cx`, `ccx`, `cx json`,
   `ccx json`), as the app does every 10 minutes: refresh the active account's own saved copy
-  (`~/.codex-accounts/<name>.json`, Keychain item `ai-usage-claude:<name>`) and ccx's files in
-  `~/.config/ai-usage/` (metadata, usage, identity cache). Anything else that writes runs with a
+  (`~/.codex-accounts/<name>.json`, Keychain item `ai-usage-claude:<name>`), cx's lock file
+  `~/.codex-accounts/.lock`, and ccx's files in `~/.config/ai-usage/` (metadata, usage, identity
+  cache). Anything else that writes runs with a
   temporary `HOME` (the login Keychain is then out of reach).
 - Reports each finding with file:line, a concrete failing scenario, and the minimal fix, ranked
   by severity — or says plainly that the diff is fine.

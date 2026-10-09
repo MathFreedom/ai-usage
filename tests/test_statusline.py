@@ -2,29 +2,21 @@
 import json
 import os
 import re
-import signal
 import time
 import unittest
 
-from helpers import ROOT, SafeTestCase, real_run, wait_group_gone
+from helpers import ROOT, SafeTestCase, kill_group, real_run, wait_group_gone
 
 SCRIPT = os.path.join(ROOT, "claude", "statusline.sh")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class StatusLineTest(SafeTestCase):
-    def run_raw(self, payload, new_session=False):
+    def run_raw(self, payload):
         env = {"HOME": self.home, "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"}
-        r = real_run(["/bin/sh", SCRIPT], input=json.dumps(payload), env=env, new_session=new_session)
+        r = real_run(["/bin/sh", SCRIPT], input=json.dumps(payload), env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r
-
-    @staticmethod
-    def kill_group(pgid):
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
 
     def run_line(self, payload):
         return ANSI.sub("", self.run_raw(payload).stdout)
@@ -52,13 +44,13 @@ class StatusLineTest(SafeTestCase):
         self.assertEqual(line, "Opus 5.5 │ cache 47m │ session: 3h30 5% │ weekly: 5d 2%")
 
     def test_zero_padded_minutes_and_cache_rounding(self):
-        line = self.run_line(self.payload(five=(5, 3 * 3600 + 5 * 60 + 30), cache_left=2790))
+        line = self.run_line(self.payload(five=(5, 3 * 3600 + 5 * 60 + 30), cache_left=2770))
         self.assertIn("session: 3h05 5%", line)
-        self.assertIn("cache 47m", line)  # 46.5 minutes left: rounded up
+        self.assertIn("cache 47m", line)  # 46.2 minutes left: rounded up, not to nearest
 
     def test_colors_follow_the_percentage(self):
         red, yellow, green = "\x1b[31m", "\x1b[33m", "\x1b[32m"
-        for pct, color in ((85, red), (80, red), (60, yellow), (50, yellow), (10, green)):
+        for pct, color in ((85, red), (80, red), (79, yellow), (50, yellow), (49, green), (10, green)):
             out = self.run_raw(self.payload(five=(pct, 12630))).stdout
             self.assertIn(f"{color}3h30 {pct}%", out, pct)
 
@@ -92,11 +84,13 @@ class StatusLineTest(SafeTestCase):
         os.makedirs(self.path(".config", "ai-usage"))
         with open(self.path(".config", "ai-usage", "statusline-chain"), "w") as f:
             f.write(chain + "\n")
-        r = self.run_raw(self.payload(five=(5, 12600)), new_session=True)
-        self.addCleanup(self.kill_group, r.pid)  # never leave a runaway chain behind
+        r = self.run_raw(self.payload(five=(5, 12600)))
         # Wait for every process the run started, background chain included: a chain looping
         # into itself never finishes, so this fails instead of passing on timing luck.
-        self.assertTrue(wait_group_gone(r.pid), "chained status line still running")
+        gone = wait_group_gone(r.pid)
+        if not gone:
+            kill_group(r.pid)  # never leave a runaway chain behind
+        self.assertTrue(gone, "chained status line still running")
         with open(counter) as f:
             self.assertEqual(f.read().count("run"), 1)
 

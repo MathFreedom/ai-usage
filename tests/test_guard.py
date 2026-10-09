@@ -19,9 +19,22 @@ class GuardTest(SafeTestCase):
             with self.assertRaises(RealCallBlocked):
                 call()
 
+    def test_os_level_process_apis_are_blocked(self):
+        import os
+        calls = [lambda: os.fork(), lambda: os.forkpty(), lambda: os.popen("true"),
+                 lambda: os.posix_spawnp("true", ["true"], dict(os.environ)),
+                 lambda: os.execv("/usr/bin/true", ["true"]),
+                 lambda: os.spawnv(os.P_WAIT, "/usr/bin/true", ["true"])]
+        for call in calls:
+            with self.assertRaises(RealCallBlocked):
+                call()
+
     def test_dns_is_blocked(self):
-        with self.assertRaises(RealCallBlocked):
-            socket.getaddrinfo("api.anthropic.com", 443)
+        for call in (lambda: socket.getaddrinfo("api.anthropic.com", 443),
+                     lambda: socket.gethostbyname("api.anthropic.com"),
+                     lambda: socket.create_connection(("api.anthropic.com", 443))):
+            with self.assertRaises(RealCallBlocked):
+                call()
 
     def test_real_network_is_blocked(self):
         with self.assertRaises(RealCallBlocked):

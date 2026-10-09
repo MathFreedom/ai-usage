@@ -1,6 +1,8 @@
 """Shared test helpers: load bin/cx and bin/ccx in a throwaway HOME, behind a guard that fails
 any test reaching a real process, network or socket, with an in-memory fake of macOS `security`.
 """
+import _posixsubprocess  # noqa: F401  (patched by the guard)
+import _socket  # noqa: F401
 import base64
 import importlib.machinery
 import importlib.util
@@ -9,6 +11,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
@@ -19,14 +22,29 @@ from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _REAL_POPEN = subprocess.Popen  # captured before any guard is installed
+_REAL_FORK_EXEC = _posixsubprocess.fork_exec  # what Popen itself uses to start the child
 
 
-def real_run(args, input=None, env=None, timeout=20, new_session=False):
-    """Run a repo script for real (status line tests only), bypassing the guard. With
-    `new_session`, the result's `pid` is also the process group of everything it started."""
-    with _REAL_POPEN(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                     text=True, env=env, start_new_session=new_session) as proc:
-        out, err = proc.communicate(input, timeout=timeout)
+def kill_group(pgid):
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def real_run(args, input=None, env=None, timeout=20):
+    """Run a repo script for real (status line tests only), bypassing the guard. It runs in its
+    own session: `pid` is the process group of everything it starts, and the whole group is
+    killed if it overruns the timeout, so a hanging script can't hang the suite."""
+    with mock.patch("_posixsubprocess.fork_exec", _REAL_FORK_EXEC), \
+            _REAL_POPEN(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        text=True, env=env, start_new_session=True) as proc:
+        try:
+            out, err = proc.communicate(input, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            kill_group(proc.pid)
+            proc.communicate()
+            raise
     result = subprocess.CompletedProcess(args, proc.returncode, out, err)
     result.pid = proc.pid
     return result
@@ -134,13 +152,17 @@ class SafeTestCase(unittest.TestCase):
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
-        # Every other way to start a process.
-        for name in ("posix_spawnp", "fork", "spawnv", "spawnve", "spawnvp", "spawnvpe",
-                     "execv", "execve", "execvp", "execvpe", "popen"):
-            if hasattr(os, name):
-                patcher = mock.patch(f"os.{name}", _blocked("process"))
-                patcher.start()
-                self.addCleanup(patcher.stop)
+        # Every other way to start a process, resolve a name or open a socket.
+        targets = [f"os.{n}" for n in ("posix_spawnp", "fork", "forkpty", "spawnv", "spawnve",
+                                        "spawnvp", "spawnvpe", "execv", "execve", "execvp",
+                                        "execvpe", "popen") if hasattr(os, n)]
+        targets += ["_posixsubprocess.fork_exec", "_socket.socket"]
+        targets += [f"socket.{n}" for n in ("gethostbyname", "gethostbyname_ex", "gethostbyaddr",
+                                             "getnameinfo", "create_connection")]
+        for target in targets:
+            patcher = mock.patch(target, _blocked("process" if "socket" not in target else "network"))
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def path(self, *parts):
         return os.path.join(self.home, *parts)

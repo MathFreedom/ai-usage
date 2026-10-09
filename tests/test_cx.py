@@ -56,7 +56,7 @@ class NamesTest(CxTestCase):
             self.assertEqual(self.cx.valid_name(name), name)
 
     def test_rejected_names(self):
-        for name in ("../x", "a/b", 'a"b', "a b", 'x" -s "y', "abc\n", "", "-x", "rm", "json", "x" * 42):
+        for name in ("../x", "a/b", 'a"b', "a'b", "a b", 'x" -s "y', "abc\n", "", "-x", "rm", "json", "x" * 42):
             with self.assertRaises(SystemExit, msg=repr(name)), contextlib.redirect_stderr(io.StringIO()):
                 self.cx.valid_name(name)
 

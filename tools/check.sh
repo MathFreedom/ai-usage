@@ -16,7 +16,7 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "not a git work tree
 step "shell syntax (every tracked or new .sh file)"
 # NUL-separated so any file name works; scripts deleted from the work tree are skipped.
 git ls-files -z --cached --others --exclude-standard -- '*.sh' \
-  | xargs -0 sh -c 'for f; do [ -e "$f" ] || continue; sh -n "$f" || { printf "%s" "$f" > "$0"; exit 255; }; done' "$tmp/bad" \
+  | xargs -0 sh -c 'for f; do [ -e "$f" ] || continue; sh -n "./$f" || { printf "%s" "$f" > "$0"; exit 255; }; done' "$tmp/bad" \
   || fail "syntax error in $(cat "$tmp/bad" 2>/dev/null)"
 
 step "cx, ccx parse as Python 3.9 (the Command Line Tools' python3)"
