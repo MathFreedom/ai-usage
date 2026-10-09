@@ -21,12 +21,27 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _REAL_POPEN = subprocess.Popen  # captured before any guard is installed
 
 
-def real_run(args, input=None, env=None, timeout=20):
-    """Run a repo script for real (status line tests only), bypassing the guard."""
+def real_run(args, input=None, env=None, timeout=20, new_session=False):
+    """Run a repo script for real (status line tests only), bypassing the guard. With
+    `new_session`, the result's `pid` is also the process group of everything it started."""
     with _REAL_POPEN(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                     text=True, env=env) as proc:
+                     text=True, env=env, start_new_session=new_session) as proc:
         out, err = proc.communicate(input, timeout=timeout)
-    return subprocess.CompletedProcess(args, proc.returncode, out, err)
+    result = subprocess.CompletedProcess(args, proc.returncode, out, err)
+    result.pid = proc.pid
+    return result
+
+
+def wait_group_gone(pgid, deadline_s=10):
+    """Wait until no process of the group is left (background jobs included)."""
+    end = time.time() + deadline_s
+    while time.time() < end:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.02)
+    return False
 
 
 class RealCallBlocked(AssertionError):
@@ -58,6 +73,7 @@ class FakeSecurity:
     def __init__(self):
         self.items = {}  # service -> (account, secret)
         self.commands = []  # argv of every call, to check no secret reaches argv
+        self.fail_writes = False  # simulate a locked Keychain / denied write
 
     def run(self, args, input=None, capture_output=False, text=False, **kwargs):
         self.commands.append(list(args))
@@ -69,6 +85,8 @@ class FakeSecurity:
                 out = self.items[service][1] + "\n"
             else:
                 code = 44
+        elif verb == "-i" and self.fail_writes:
+            return subprocess.CompletedProcess(args, 1, "", "security: SecKeychainItemCreate: error")
         elif verb == "-i":
             # Parsed like the real tool would: shell-style words, the last -a/-s/-X wins. A name
             # that smuggles quotes or options in therefore really reaches another item here.
@@ -116,6 +134,13 @@ class SafeTestCase(unittest.TestCase):
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
+        # Every other way to start a process.
+        for name in ("posix_spawnp", "fork", "spawnv", "spawnve", "spawnvp", "spawnvpe",
+                     "execv", "execve", "execvp", "execvpe", "popen"):
+            if hasattr(os, name):
+                patcher = mock.patch(f"os.{name}", _blocked("process"))
+                patcher.start()
+                self.addCleanup(patcher.stop)
 
     def path(self, *parts):
         return os.path.join(self.home, *parts)

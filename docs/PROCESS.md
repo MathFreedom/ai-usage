@@ -15,7 +15,7 @@ still goes through the independent audit before it is pushed. The owner signs of
 - **Status quo**: what the code actually does today, on an up-to-date `origin/main` (a local
   checkout may lag behind) — the real call sites, `AGENTS.md`, and what the listing commands
   print (`cx`, `ccx`, `cx json`, `ccx json`: not read-only — they refresh the active account's
-  saved copy and ccx's usage cache, as the app does — but safe to run).
+  own saved copy and ccx's caches, as the app does — but safe to run; see PROCESS_AUDIT).
 - **Strategy**: the possible options compared on effort, risk, impact and maintenance, with a
   recommendation for the **simplest** good one — not the first that works.
 - Live data that the repo can't show (an account's plan, a provider's API behavior) is checked

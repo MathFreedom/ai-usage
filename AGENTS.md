@@ -19,7 +19,8 @@ Any non-trivial change, code or docs, follows [docs/PROCESS.md](docs/PROCESS.md)
 - Pre-flight, before every commit and in every audit: `tools/check.sh` → must end with
   `check: OK`. It runs the offline tests in `tests/` (`unittest`, Python 3.9): `cx`/`ccx` are
   loaded with a temp `HOME`, a fake `security`, faked APIs, and a guard that fails any test
-  reaching a real process, network or socket; the status line runs for real with a temp `HOME`.
+  reaching a real process (subprocess, `os` spawn/exec/fork), network, DNS or socket; the status
+  line runs for real with a temp `HOME`.
   New behavior in `bin/` or `claude/` comes with a test.
 - Engineering preferences: explicit over clever; engineered enough (neither fragile nor
   over-abstracted); handle edge cases; flag repetition; keep existing behavior unless the change

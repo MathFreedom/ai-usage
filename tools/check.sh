@@ -14,11 +14,10 @@ fail() { printf 'check: FAILED (%s)\n' "$1"; exit 1; }
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "not a git work tree"
 
 step "shell syntax (every tracked or new .sh file)"
-git -c core.quotePath=false ls-files --cached --others --exclude-standard -- '*.sh' > "$tmp/scripts"
-while IFS= read -r f; do
-  [ -e "$f" ] || continue  # tracked but deleted in the work tree
-  sh -n "$f" || fail "syntax error in $f"
-done < "$tmp/scripts"
+# NUL-separated so any file name works; scripts deleted from the work tree are skipped.
+git ls-files -z --cached --others --exclude-standard -- '*.sh' \
+  | xargs -0 sh -c 'for f; do [ -e "$f" ] || continue; sh -n "$f" || { printf "%s" "$f" > "$0"; exit 255; }; done' "$tmp/bad" \
+  || fail "syntax error in $(cat "$tmp/bad" 2>/dev/null)"
 
 step "cx, ccx parse as Python 3.9 (the Command Line Tools' python3)"
 /usr/bin/python3 -B - bin/cx bin/ccx <<'EOF' || fail "Python syntax"
@@ -52,7 +51,8 @@ scan() {
   set -e
   [ "$code" -le 1 ] && [ ! -s "$tmp/grep-errors" ] || { cat "$tmp/grep-errors"; fail "git grep failed ($code)"; }
 }
-scan -nIE '(^|[^A-Za-z0-9])(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}|/U[s]ers/[A-Za-z]' -- .
+# -a: binary files too (a token can hide in any file); /users is case-insensitive on APFS.
+scan -naE '(^|[^A-Za-z0-9])(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}|/[Uu][Ss][Ee][Rr][Ss]/[A-Za-z]' -- .
 if [ -s "$tmp/found" ]; then cat "$tmp/found"; fail "token or absolute home path above"; fi
 scan -hIoE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' -- .
 emails=$(grep -viE '@([a-z0-9-]+\.)*example(\.(com|org|net))?$|@users\.noreply\.github\.com$|@[0-9]x\.(png|jpe?g)$' "$tmp/found" || true)

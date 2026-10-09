@@ -1,6 +1,7 @@
 """bin/ccx — Claude Code accounts. Runs in a temp HOME against an in-memory fake of macOS
 `security`; the API is faked and real processes, network and sockets are blocked."""
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -98,10 +99,27 @@ class PackingTest(CcxTestCase):
         self.assertEqual(self.ccx.unpack(self.ccx.pack(obj)), obj)
         self.assertEqual(self.ccx.unpack(json.dumps(obj)), obj)  # plain JSON still readable
 
-    def test_saved_entry_fits_in_one_security_line(self):
-        self.sign_in(claude_creds("tok-a"), ALICE_ACCOUNT)
+    def test_realistic_entry_is_packed_and_fits(self):
+        # Real tokens are long and random: an unpacked entry would not fit in one `security -i`
+        # line, so it must be stored packed.
+        noise = lambda seed: "".join(hashlib.sha256(f"{seed}{i}".encode()).hexdigest() for i in range(8))
+        creds = claude_creds("sk-ant-oat01-" + noise("a"))
+        creds["claudeAiOauth"]["refreshToken"] = "sk-ant-ort01-" + noise("r")
+        account = dict(ALICE_ACCOUNT, organizationName="alice@example.com's Organization",
+                       organizationRole="admin", workspaceRole=None, subscriptionCreatedAt="2026-01-01T00:00:00Z")
+        self.sign_in(creds, account)
         self.assertEqual(self.run_ccx("save", "alice")[0], 0)
-        self.assertIn("ai-usage-claude:alice", self.keychain.items)
+        raw = self.keychain.items["ai-usage-claude:alice"][1]
+        self.assertTrue(raw.startswith("z:"))
+        self.assertEqual(self.ccx.unpack(raw)["credentials"], creds)
+
+    def test_failed_keychain_write_saves_nothing(self):
+        self.sign_in(claude_creds("tok-a"), ALICE_ACCOUNT)
+        self.keychain.fail_writes = True
+        code, _ = self.run_ccx("save", "alice")
+        self.assertEqual(code, 1)
+        self.assertNotIn("ai-usage-claude:alice", self.keychain.items)
+        self.assertFalse(os.path.exists(self.path(".config", "ai-usage", "claude-accounts.json")))
 
     def test_secret_never_in_argv(self):
         bob = claude_creds("tok-secret-b")
