@@ -1,7 +1,7 @@
 # Process — from investigation to pull request
 
 The method followed for any non-trivial change, code or docs. Every change, even a small one,
-still goes through the [independent audit](PROCESS_AUDIT.md) before it is pushed. The owner signs off at each
+still goes through the independent audit before it is pushed. The owner signs off at each
 **gate**; implementation flows straight into the audit. The audit has its own reference,
 [PROCESS_AUDIT](PROCESS_AUDIT.md), not duplicated here.
 
@@ -10,11 +10,12 @@ still goes through the [independent audit](PROCESS_AUDIT.md) before it is pushed
 → 5. Independent audit until SAFE → 6. Pull request
 ```
 
-## 1. Investigation — read-only
+## 1. Investigation — no changes
 
 - **Status quo**: what the code actually does today, on an up-to-date `origin/main` (a local
   checkout may lag behind) — the real call sites, `AGENTS.md`, and what the listing commands
-  print (`cx`, `ccx`, `cx json`, `ccx json`; they only refresh their own account copies).
+  print (`cx`, `ccx`, `cx json`, `ccx json`: not read-only — they refresh the active account's
+  saved copy and ccx's usage cache, as the app does — but safe to run).
 - **Strategy**: the possible options compared on effort, risk, impact and maintenance, with a
   recommendation for the **simplest** good one — not the first that works.
 - Live data that the repo can't show (an account's plan, a provider's API behavior) is checked

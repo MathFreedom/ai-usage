@@ -1,7 +1,8 @@
 # Process — independent, non-oriented audit before merge
 
-Every change, code or docs, small or not, goes through this audit before it is pushed (the full
-method of [PROCESS](PROCESS.md) — investigation, grill, plan — is for non-trivial changes). Adapted for a project
+Every change, code or docs, small or not, goes through this audit before it is pushed (the
+full method of [PROCESS](PROCESS.md) — investigation, grill, plan — is for non-trivial
+changes). Adapted for a project
 without CI or test suite: the proof is execution, and `tools/check.sh` is the shared pre-flight.
 
 ## Cardinal rules
@@ -42,11 +43,12 @@ report defects unrelated to it.
 - **Proof by execution** whenever feasible (temporary script or build, run, then deleted); a
   line of reasoning never beats an execution.
 - `tools/check.sh` must end with `check: OK` in the worktree.
-- **Never touches the owner's real data**: no `cx`/`ccx` `use`, `add`, `save` or `rm`, no change
-  to `~/.codex`, `~/.claude.json`, `~/.claude/settings.json`, no `install.sh`. Listing commands
-  (`cx`, `ccx`, `cx json`, `ccx json`) are not read-only — they refresh the active account's own
-  saved copy and the usage cache, as the app does every 10 minutes — but they are safe to run.
-  Anything else that writes runs with a temporary `HOME`.
+- **Never touches the owner's real data**: no `cx`/`ccx` `use`, `add`, `save` or `rm`, no
+  Keychain writes, no change to `~/.codex`, `~/.claude.json`, `~/.claude/settings.json`, no
+  `install.sh`. Listing commands (`cx`, `ccx`, `cx json`, `ccx json`) are not read-only — they
+  refresh the active account's saved copy and ccx's usage cache, as the app does every 10
+  minutes — but they are safe to run. Anything else that writes runs with a temporary `HOME`
+  (the login Keychain is then out of reach).
 - Reports each finding with file:line, a concrete failing scenario, and the minimal fix, ranked
   by severity — or says plainly that the diff is fine.
 - Verdict: **SAFE** or **NOT SAFE**.

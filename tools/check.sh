@@ -14,8 +14,9 @@ fail() { printf 'check: FAILED (%s)\n' "$1"; exit 1; }
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "not a git work tree"
 
 step "shell syntax (every tracked or new .sh file)"
-git ls-files --cached --others --exclude-standard -- '*.sh' > "$tmp/scripts"
+git -c core.quotePath=false ls-files --cached --others --exclude-standard -- '*.sh' > "$tmp/scripts"
 while IFS= read -r f; do
+  [ -e "$f" ] || continue  # tracked but deleted in the work tree
   sh -n "$f" || fail "syntax error in $f"
 done < "$tmp/scripts"
 
@@ -38,15 +39,16 @@ xcrun swiftc -parse-as-library -swift-version 5 -D SCREENSHOTS -target "$(uname 
 
 step "no secrets or personal data (tracked and new files)"
 # Patterns are written so they never match their own source: this file is scanned too.
-# git grep exits 1 when nothing matches; anything else is an error, not a pass.
+# git grep exits 1 when nothing matches; anything else, or a file it couldn't read, is an
+# error, not a pass.
 scan() {
   set +e
-  git grep --untracked "$@" > "$tmp/found"
+  git grep --untracked "$@" > "$tmp/found" 2> "$tmp/grep-errors"
   code=$?
   set -e
-  [ "$code" -le 1 ] || fail "git grep failed ($code)"
+  [ "$code" -le 1 ] && [ ! -s "$tmp/grep-errors" ] || { cat "$tmp/grep-errors"; fail "git grep failed ($code)"; }
 }
-scan -nIE '(^|[^A-Za-z0-9])(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,})|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}|/U[s]ers/[A-Za-z]' -- .
+scan -nIE '(^|[^A-Za-z0-9])(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}|/U[s]ers/[A-Za-z]' -- .
 if [ -s "$tmp/found" ]; then cat "$tmp/found"; fail "token or absolute home path above"; fi
 scan -hIoE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' -- .
 emails=$(grep -viE '@([a-z0-9-]+\.)*example(\.(com|org|net))?$|@users\.noreply\.github\.com$|@[0-9]x\.(png|jpe?g)$' "$tmp/found" || true)
