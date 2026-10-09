@@ -1,5 +1,5 @@
 #!/bin/sh
-# Regenerates docs/screenshots/desktop-{light,dark}.jpg from the app's SwiftUI views with fictional data.
+# Regenerates docs/screenshots/desktop.jpg (light | dark) from the app's SwiftUI views with fictional data.
 set -e
 cd "$(dirname "$0")"
 root=$(cd ../.. && pwd)
@@ -18,7 +18,6 @@ out="$root/docs/screenshots"
 mkdir -p "$out"
 "$build/screenshots" "$out"
 
-# The desktops have no transparency: JPEG keeps them a fraction of the PNG size.
-for f in "$out"/desktop-*.png; do
-  sips -s format jpeg -s formatOptions 90 "$f" --out "${f%.png}.jpg" >/dev/null && rm "$f"
-done
+# No transparency: JPEG keeps it a fraction of the PNG size.
+sips -s format jpeg -s formatOptions 90 "$out/desktop.png" --out "$out/desktop.jpg" >/dev/null
+rm "$out/desktop.png"
