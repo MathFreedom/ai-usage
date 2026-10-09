@@ -1,3 +1,5 @@
 .DS_Store
-*.command
 *.bak*
+build/
+*.app
+__pycache__/

@@ -4,7 +4,7 @@
 set -e
 repo=$(cd "$(dirname "$0")" && pwd)
 
-command -v jq >/dev/null || { echo "jq est requis : brew install jq"; exit 1; }
+command -v jq >/dev/null || { echo "jq is required: brew install jq"; exit 1; }
 
 mkdir -p "$HOME/.local/bin" "$HOME/.claude"
 ln -sf "$repo/bin/cx" "$HOME/.local/bin/cx"
@@ -15,13 +15,24 @@ chmod +x "$repo/bin/cx" "$repo/bin/ccx" "$repo/claude/statusline.sh" "$repo/app/
 settings="$HOME/.claude/settings.json"
 [ -f "$settings" ] || echo '{}' > "$settings"
 current=$(jq -r '.statusLine.command // ""' "$settings")
-if [ "$current" != "~/.claude/statusline-cache.sh" ]; then
-  cp "$settings" "$settings.bak-ai-usage"
-  jq '.statusLine = {"type": "command", "command": "~/.claude/statusline-cache.sh", "refreshInterval": 60}' \
-    "$settings.bak-ai-usage" > "$settings"
-  echo "Status line Claude Code configurée (ancien réglage : $settings.bak-ai-usage)"
-fi
+case "$current" in
+  *statusline-cache.sh*) ;;  # already ours, in whatever form
+  *)
+    [ -f "$settings.bak-ai-usage" ] || cp "$settings" "$settings.bak-ai-usage"  # keep the first backup
+    if [ -n "$current" ]; then  # keep feeding the previous status line command
+      mkdir -p "$HOME/.config/ai-usage"
+      printf '%s\n' "$current" > "$HOME/.config/ai-usage/statusline-chain"
+      echo "Your previous status line now runs in the background (output hidden):"
+      echo "  $current"
+      echo "Delete ~/.config/ai-usage/statusline-chain to stop it."
+    fi
+    tmp=$(mktemp)
+    jq '.statusLine = {"type": "command", "command": "~/.claude/statusline-cache.sh", "refreshInterval": 60}' \
+      "$settings" > "$tmp" && mv "$tmp" "$settings"
+    echo "Claude Code status line configured (previous settings: $settings.bak-ai-usage)"
+    ;;
+esac
 
 "$repo/app/build.sh"
 open "$HOME/Applications/AI Usage.app"
-echo "Installé. Ajoute tes comptes Codex avec : cx save <nom> / cx add"
+echo "Installed. Save your current accounts with: cx save && ccx save"
