@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -17,7 +18,15 @@ import urllib.request
 from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REAL_RUN = subprocess.run  # kept for tests that run a repo script on purpose (status line)
+_REAL_POPEN = subprocess.Popen  # captured before any guard is installed
+
+
+def real_run(args, input=None, env=None, timeout=20):
+    """Run a repo script for real (status line tests only), bypassing the guard."""
+    with _REAL_POPEN(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                     text=True, env=env) as proc:
+        out, err = proc.communicate(input, timeout=timeout)
+    return subprocess.CompletedProcess(args, proc.returncode, out, err)
 
 
 class RealCallBlocked(AssertionError):
@@ -61,13 +70,23 @@ class FakeSecurity:
             else:
                 code = 44
         elif verb == "-i":
+            # Parsed like the real tool would: shell-style words, the last -a/-s/-X wins. A name
+            # that smuggles quotes or options in therefore really reaches another item here.
             for line in (input or "").splitlines():
                 if len(line) > self.MAX_LINE:
                     return subprocess.CompletedProcess(args, 0, "", "security: unknown command")
-                m = re.match(r'add-generic-password -U -a "([^"]*)" -s "([^"]*)" -X ([0-9a-f]+)$', line)
-                if not m:
+                words = shlex.split(line)
+                if not words or words[0] != "add-generic-password":
                     return subprocess.CompletedProcess(args, 1, "", f"error: {line[:40]}")
-                self.items[m.group(2)] = (m.group(1), bytes.fromhex(m.group(3)).decode())
+                opts = {}
+                i = 1
+                while i < len(words):
+                    if words[i] in ("-a", "-s", "-X") and i + 1 < len(words):
+                        opts[words[i]] = words[i + 1]
+                        i += 2
+                    else:
+                        i += 1
+                self.items[opts["-s"]] = (opts.get("-a", ""), bytes.fromhex(opts["-X"]).decode())
         elif verb == "delete-generic-password":
             self.items.pop(args[args.index("-s") + 1], None)
         elif verb == "dump-keychain":
@@ -88,8 +107,12 @@ class SafeTestCase(unittest.TestCase):
         for patcher in (
             mock.patch.dict(os.environ, env, clear=True),
             mock.patch("subprocess.run", _blocked("process")),
+            mock.patch("subprocess.Popen", _blocked("process")),  # also covers call/check_output
+            mock.patch("os.system", _blocked("process")),
+            mock.patch("os.posix_spawn", _blocked("process")),
             mock.patch("urllib.request.urlopen", _blocked("network call")),
             mock.patch("socket.socket", _blocked("socket")),
+            mock.patch("socket.getaddrinfo", _blocked("DNS lookup")),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)

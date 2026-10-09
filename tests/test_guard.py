@@ -12,6 +12,17 @@ class GuardTest(SafeTestCase):
         with self.assertRaises(RealCallBlocked):
             subprocess.run(["/usr/bin/security", "dump-keychain"])
 
+    def test_other_process_apis_are_blocked(self):
+        import os
+        for call in (lambda: subprocess.Popen(["/usr/bin/true"]), lambda: subprocess.check_output(["/usr/bin/true"]),
+                     lambda: os.system("true")):
+            with self.assertRaises(RealCallBlocked):
+                call()
+
+    def test_dns_is_blocked(self):
+        with self.assertRaises(RealCallBlocked):
+            socket.getaddrinfo("api.anthropic.com", 443)
+
     def test_real_network_is_blocked(self):
         with self.assertRaises(RealCallBlocked):
             urllib.request.urlopen("https://api.anthropic.com/api/oauth/usage")

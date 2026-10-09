@@ -51,7 +51,7 @@ class CcxTestCase(SafeTestCase):
 
     def sign_in(self, creds, account, extra=None):
         """What Claude Code keeps: the Keychain item and oauthAccount in ~/.claude.json."""
-        self.keychain.items[ACTIVE] = ("mathis", json.dumps(creds))
+        self.keychain.items[ACTIVE] = ("user", json.dumps(creds))
         token = creds["claudeAiOauth"]["accessToken"]
         self.tokens[token] = (account["accountUuid"], account["emailAddress"])
         config = {"numStartups": 7, "projects": {"/x": {}}, "oauthAccount": account}
@@ -73,6 +73,25 @@ class CcxTestCase(SafeTestCase):
         return code, out.getvalue()
 
 
+class NamesTest(CcxTestCase):
+    def test_rejected_names(self):
+        for name in ("../x", "a/b", 'a"b', "a b", "abc\n", "", "-x", "rm", "json", "x" * 42):
+            with self.assertRaises(SystemExit, msg=repr(name)), contextlib.redirect_stderr(io.StringIO()):
+                self.ccx.valid_name(name)
+
+    def test_default_name_from_email(self):
+        self.assertEqual(self.ccx.default_name("john.doe+work@example.com"), "john.doe-work")
+        self.assertEqual(self.ccx.default_name("json@example.com"), "account")
+
+    def test_injection_cannot_reach_the_active_item(self):
+        # Fresh HOME: nothing saved yet, so only name validation stands in the way.
+        self.sign_in(claude_creds("tok-a"), ALICE_ACCOUNT)
+        before = dict(self.keychain.items)
+        code, _ = self.run_ccx("save", 'x" -s "Claude Code-credentials')
+        self.assertEqual(code, 1)
+        self.assertEqual(self.keychain.items, before)
+
+
 class PackingTest(CcxTestCase):
     def test_round_trip(self):
         obj = {"credentials": claude_creds("tok"), "oauthAccount": ALICE_ACCOUNT}
@@ -85,9 +104,19 @@ class PackingTest(CcxTestCase):
         self.assertIn("ai-usage-claude:alice", self.keychain.items)
 
     def test_secret_never_in_argv(self):
+        bob = claude_creds("tok-secret-b")
+        self.sign_in(bob, BOB_ACCOUNT)
+        self.run_ccx("save", "bob")
         self.sign_in(claude_creds("tok-secret-a"), ALICE_ACCOUNT)
         self.run_ccx("save", "alice")
-        self.assertFalse(any("tok-secret-a" in " ".join(c) for c in self.keychain.commands))
+        self.assertEqual(self.run_ccx("use", "bob")[0], 0)  # writes plain JSON to the active item
+        writes = [c for c in self.keychain.commands if c[1:2] == ["-i"]]
+        self.assertTrue(writes)
+        for argv in writes:
+            self.assertEqual(argv, [self.ccx.SECURITY, "-i"])  # secret only on stdin
+        joined = " ".join(" ".join(c) for c in self.keychain.commands)
+        for secret in ("tok-secret-a", "tok-secret-b", json.dumps(bob).encode().hex()[:40]):
+            self.assertNotIn(secret, joined)
 
     def test_oversized_write_is_refused(self):
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
@@ -117,6 +146,16 @@ class SaveTest(CcxTestCase):
         self.assertEqual(self.ccx.stored("alice")["oauthAccount"], ALICE_ACCOUNT)
 
 
+class DuplicateTest(CcxTestCase):
+    def test_refuses_to_save_the_same_account_twice(self):
+        self.sign_in(claude_creds("tok-a"), ALICE_ACCOUNT)
+        self.run_ccx("save", "alice")
+        code, out = self.run_ccx("save", "again")
+        self.assertEqual(code, 1)
+        self.assertIn('already saved as "alice"', out)
+        self.assertNotIn("ai-usage-claude:again", self.keychain.items)
+
+
 class UseTest(CcxTestCase):
     def setUp(self):
         super().setUp()
@@ -138,7 +177,7 @@ class UseTest(CcxTestCase):
 
     def test_refreshed_tokens_of_the_previous_account_are_kept(self):
         rotated = claude_creds("tok-a2", refresh="r2")
-        self.keychain.items[ACTIVE] = ("mathis", json.dumps(rotated))  # Claude Code refreshed
+        self.keychain.items[ACTIVE] = ("user", json.dumps(rotated))  # Claude Code refreshed
         self.tokens["tok-a2"] = ("uuid-alice", "alice@example.com")
         self.run_ccx("use", "bob")
         self.assertEqual(self.ccx.stored("alice")["credentials"], rotated)

@@ -37,8 +37,9 @@ exists at step 3.
      installer; data flow; what is shared with Claude Code, Codex and the Keychain.
   2. **Code quality** — repetition, error handling, missing edge cases, over- or
      under-engineering.
-  3. **Verification** — there is no test suite: what will prove the change works (commands to
-     run, states to reproduce, screenshots), and which failure modes stay unchecked.
+  3. **Verification** — what will prove the change works: tests in `tests/` (run by
+     `tools/check.sh`) for `cx`, `ccx` and the status line; for the app, a build plus a visual
+     check; and which failure modes stay unchecked.
   4. **Performance & energy** — polling, process spawns, Keychain calls, rate-limited endpoints
      (`/api/oauth/usage` answers 429 when polled too often).
 - One section at a time, pausing after each. Issues are **numbered**, options **lettered**, each

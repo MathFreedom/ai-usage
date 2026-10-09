@@ -5,7 +5,7 @@ import re
 import time
 import unittest
 
-from helpers import REAL_RUN, ROOT, SafeTestCase
+from helpers import ROOT, SafeTestCase, real_run
 
 SCRIPT = os.path.join(ROOT, "claude", "statusline.sh")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -14,8 +14,7 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 class StatusLineTest(SafeTestCase):
     def run_line(self, payload):
         env = {"HOME": self.home, "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"}
-        r = REAL_RUN(["/bin/sh", SCRIPT], input=json.dumps(payload), capture_output=True, text=True,
-                     env=env, timeout=20)
+        r = real_run(["/bin/sh", SCRIPT], input=json.dumps(payload), env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         return ANSI.sub("", r.stdout)
 
@@ -72,7 +71,10 @@ class StatusLineTest(SafeTestCase):
         with open(self.path(".config", "ai-usage", "statusline-chain"), "w") as f:
             f.write(chain + "\n")
         self.run_line(self.payload(five=(5, 12600)))
-        time.sleep(1.5)  # the chained command runs in the background
+        deadline = time.time() + 10  # the chained command runs in the background
+        while not os.path.exists(counter) and time.time() < deadline:
+            time.sleep(0.05)
+        time.sleep(0.5)  # a looping chain would have run again by now
         with open(counter) as f:
             self.assertEqual(f.read().count("run"), 1)
 
