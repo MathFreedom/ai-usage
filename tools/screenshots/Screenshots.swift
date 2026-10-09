@@ -18,7 +18,10 @@ func demoModel(singleClaude: Bool) -> UsageModel {
     let personal = Account(
         brand: .claude, name: "personal", email: "alex@example.com", plan: "max", active: true,
         error: nil, limitReached: false,
-        windows: [window("5h", 34, resetsIn: 2.2), window("Weekly", 62, resetsIn: 98)],
+        // Per-model weekly limit (e.g. Fable) only in the single-account card: in account rows its
+        // long label wraps.
+        windows: [window("5h", 34, resetsIn: 2.2), window("Weekly", 62, resetsIn: 98)]
+            + (singleClaude ? [window("Fable weekly", 12, resetsIn: 98)] : []),
         resets: [], lastSeen: nil)
     let work = Account(
         brand: .claude, name: "work", email: "alex@acme.example", plan: "pro", active: false,
