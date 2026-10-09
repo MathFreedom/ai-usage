@@ -131,8 +131,8 @@ struct Desktop: View {
     let model: UsageModel
     let dark: Bool
     let label: NSImage
+    var height: CGFloat? = nil  // nil: as tall as the panel needs, plus a margin
 
-    /// The image is as tall as the panel needs, plus a margin: no empty wallpaper below it.
     var body: some View {
         VStack(spacing: 0) {
             MenuBar(dark: dark, label: label)
@@ -144,7 +144,7 @@ struct Desktop: View {
             }
         }
         .padding(.bottom, 64)
-        .frame(width: 780)
+        .frame(width: 780, height: height, alignment: .top)
         .background(Wallpaper(dark: dark))
     }
 }
@@ -161,7 +161,7 @@ func menuBarLabel(dark: Bool) -> NSImage {
 
 /// Draws a view in an offscreen window (so AppKit-backed controls render too) and saves a PNG.
 @MainActor
-func render<V: View>(_ view: V, appearance: NSAppearance.Name, to path: String) throws {
+func snapshot<V: View>(_ view: V, appearance: NSAppearance.Name) -> NSBitmapImageRep? {
     let host = NSHostingView(rootView: view)
     host.appearance = NSAppearance(named: appearance)
     host.frame = CGRect(origin: .zero, size: host.fittingSize)
@@ -174,11 +174,39 @@ func render<V: View>(_ view: V, appearance: NSAppearance.Name, to path: String) 
     window.orderFrontRegardless()
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.5))
-    guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
+    guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return nil }
     host.cacheDisplay(in: host.bounds, to: rep)
     window.orderOut(nil)
-    try rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
-    print("wrote \(path) (\(rep.pixelsWide)×\(rep.pixelsHigh))")
+    return rep
+}
+
+/// Light on the left, dark on the right, same height (the taller desktop sets it).
+@MainActor
+func sideBySide(to path: String) throws {
+    func desktop(dark: Bool, height: CGFloat? = nil) -> Desktop {
+        // One Claude account in dark, two in light: both card layouts are visible.
+        Desktop(model: demoModel(singleClaude: dark), dark: dark, label: menuBarLabel(dark: dark), height: height)
+    }
+    func fittingHeight(dark: Bool) -> CGFloat {
+        let host = NSHostingView(rootView: desktop(dark: dark))
+        host.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        return host.fittingSize.height
+    }
+    let height = max(fittingHeight(dark: false), fittingHeight(dark: true))
+    guard let light = snapshot(desktop(dark: false, height: height), appearance: .aqua),
+          let dark = snapshot(desktop(dark: true, height: height), appearance: .darkAqua),
+          let canvas = NSBitmapImageRep(
+              bitmapDataPlanes: nil, pixelsWide: light.pixelsWide + dark.pixelsWide,
+              pixelsHigh: max(light.pixelsHigh, dark.pixelsHigh), bitsPerSample: 8, samplesPerPixel: 4,
+              hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+    else { throw CocoaError(.fileWriteUnknown) }
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: canvas)
+    light.draw(in: NSRect(x: 0, y: 0, width: light.pixelsWide, height: light.pixelsHigh))
+    dark.draw(in: NSRect(x: light.pixelsWide, y: 0, width: dark.pixelsWide, height: dark.pixelsHigh))
+    NSGraphicsContext.restoreGraphicsState()
+    try canvas.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    print("wrote \(path) (\(canvas.pixelsWide)×\(canvas.pixelsHigh))")
 }
 
 @main
@@ -189,11 +217,6 @@ struct Screenshots {
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
         let out = CommandLine.arguments.dropFirst().first ?? "."
-        for (dark, suffix) in [(true, "dark"), (false, "light")] {
-            let model = demoModel(singleClaude: dark)  // one look at each Claude card layout
-            let appearance: NSAppearance.Name = dark ? .darkAqua : .aqua
-            try render(Desktop(model: model, dark: dark, label: menuBarLabel(dark: dark)),
-                       appearance: appearance, to: "\(out)/desktop-\(suffix).png")
-        }
+        try sideBySide(to: "\(out)/desktop.png")
     }
 }

@@ -4,10 +4,7 @@ Your Claude and Codex usage limits, one glance away in the macOS menu bar — an
 switch between your accounts.
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/desktop-dark.jpg">
-    <img src="docs/screenshots/desktop-light.jpg" alt="AI Usage panel open below the menu bar" width="820">
-  </picture>
+  <img src="docs/screenshots/desktop.jpg" alt="AI Usage panel open below the menu bar, in light and dark mode" width="100%">
 </p>
 
 - **Menu bar** — the most used limit of each provider, colored only when it matters
