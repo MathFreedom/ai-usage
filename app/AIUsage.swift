@@ -345,7 +345,12 @@ final class UsageModel: ObservableObject {
     private var menuBarKey: String?
     private var appearanceObservation: NSKeyValueObservation?
 
-    init() {
+    private let live: Bool
+
+    /// `live: false` builds an empty model that never fetches (used to render screenshots).
+    init(live: Bool = true) {
+        self.live = live
+        guard live else { return }
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
@@ -358,6 +363,7 @@ final class UsageModel: ObservableObject {
     }
 
     func refresh() {
+        guard live else { return }
         (claude, claudeUpdated) = loadClaude()
         updateMenuBarImage()
         guard !loading else { return }
@@ -457,11 +463,6 @@ final class UsageModel: ObservableObject {
         }
         if let worst = codex.first(where: \.active)?.worst {
             items.append(.init(brand: .openai, percent: worst.percent))
-        }
-        // Dev aid: AI_USAGE_FAKE_PERCENTS="85,0" forces the label values (Claude, Codex).
-        if let fake = ProcessInfo.processInfo.environment["AI_USAGE_FAKE_PERCENTS"] {
-            let values = fake.split(separator: ",").compactMap { Int($0) }
-            items = zip([Brand.claude, .openai], values).map { .init(brand: $0, percent: $1) }
         }
         // Each logo gets its own color; neutral items must still match the menu bar. A template
         // image does that by itself but can't hold colors, so colored labels are rendered with an
@@ -799,6 +800,7 @@ struct PanelView: View {
 
 // MARK: - App
 
+#if !SCREENSHOTS  // tools/screenshots provides its own entry point
 @main
 struct AIUsageApp: App {
     @StateObject private var model = UsageModel()
@@ -812,3 +814,4 @@ struct AIUsageApp: App {
         .menuBarExtraStyle(.window)
     }
 }
+#endif
