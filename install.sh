@@ -8,8 +8,9 @@ command -v jq >/dev/null || { echo "jq est requis : brew install jq"; exit 1; }
 
 mkdir -p "$HOME/.local/bin" "$HOME/.claude"
 ln -sf "$repo/bin/cx" "$HOME/.local/bin/cx"
+ln -sf "$repo/bin/ccx" "$HOME/.local/bin/ccx"
 ln -sf "$repo/claude/statusline.sh" "$HOME/.claude/statusline-cache.sh"
-chmod +x "$repo/bin/cx" "$repo/claude/statusline.sh" "$repo/app/build.sh"
+chmod +x "$repo/bin/cx" "$repo/bin/ccx" "$repo/claude/statusline.sh" "$repo/app/build.sh"
 
 settings="$HOME/.claude/settings.json"
 [ -f "$settings" ] || echo '{}' > "$settings"
