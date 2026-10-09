@@ -1,5 +1,5 @@
 #!/bin/sh
-# Regenerates docs/screenshots/*.png from the app's SwiftUI views with fictional data.
+# Regenerates docs/screenshots/desktop-{light,dark}.jpg from the app's SwiftUI views with fictional data.
 set -e
 cd "$(dirname "$0")"
 root=$(cd ../.. && pwd)

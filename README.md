@@ -63,7 +63,8 @@ extensions need a restart.
   accounts show their last known usage: their tokens are never refreshed in the background.
 - **Logos** are taken from the Claude and ChatGPT apps when installed; SF Symbols otherwise.
 
-[`AGENTS.md`](AGENTS.md) documents the internals.
+[`AGENTS.md`](AGENTS.md) documents the internals; changes follow [`docs/PROCESS.md`](docs/PROCESS.md)
+and must pass `tools/check.sh`.
 
 ## Uninstall
 
