@@ -68,14 +68,16 @@ and must pass `tools/check.sh` (builds, offline tests, secret scan).
 
 ## Uninstall
 
-Turn off **Open at Login** in the app's settings, then:
+Turn off **Open at Login** in the app's settings. Then quit the app, print the status line you
+had before installing (if any — set it back in `~/.claude/settings.json` afterwards if you want
+it), remove everything the installer created, and remove the status line from Claude Code's
+settings:
 
 ```sh
 osascript -e 'quit app "AI Usage"'
-cat ~/.config/ai-usage/statusline-chain 2>/dev/null  # your previous status line, if you had one
+jq .statusLine ~/.claude/settings.json.bak-ai-usage
 rm -rf ~/Applications/AI\ Usage.app ~/.local/bin/cx ~/.local/bin/ccx
 rm -rf ~/.codex-accounts ~/.config/ai-usage ~/.claude/usage-cache.json ~/.claude/settings.json.bak-ai-usage
-# Claude Code status line: remove it (or set the previous one printed above)
 tmp=$(mktemp) && jq 'del(.statusLine)' ~/.claude/settings.json > "$tmp" && cat "$tmp" > ~/.claude/settings.json && rm "$tmp"
 rm ~/.claude/statusline-cache.sh
 ```
