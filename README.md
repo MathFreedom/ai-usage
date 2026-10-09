@@ -1,17 +1,17 @@
 # AI Usage
 
-Your Claude and Codex usage limits, one glance away in the macOS menu bar — and one click to
+Your Claude and Codex usage limits, one glance away in the macOS menu bar, and one click to
 switch between your accounts.
 
 <p align="center">
   <img src="docs/screenshots/desktop.jpg" alt="AI Usage panel open below the menu bar, in light and dark mode" width="100%">
 </p>
 
-- **Menu bar** — the most used limit of each provider, colored only when it matters
+- **Menu bar**: the most used limit of each provider, colored only when it matters
   (orange from 50 %, red from 80 %).
-- **Panel** — every limit with its countdown and exact reset time: Claude's 5-hour, weekly and
+- **Panel**: every limit with its countdown and exact reset time: Claude's 5-hour, weekly and
   per-model windows, Codex's windows and free resets.
-- **Accounts** — save several Claude Code and Codex accounts, switch with a click or from the
+- **Accounts**: save several Claude Code and Codex accounts, switch with a click or from the
   terminal (`ccx`, `cx`).
 - **Status line** for Claude Code: `Opus 5.5 │ cache 47m │ session: 3h29 5% │ weekly: 5d 2%`.
 - **Settings** (⚙︎): open at login, appearance (automatic, light, dark), English or French.
@@ -54,7 +54,7 @@ extensions need a restart.
 
 - **Usage** is read from the endpoints the official clients use:
   `api.anthropic.com/api/oauth/usage` for Claude, `chatgpt.com/backend-api/wham/usage` for Codex.
-  Nothing is ever consumed — free resets are only displayed.
+  Nothing is ever consumed: free resets are only displayed.
 - **Credentials stay on your Mac.** Claude accounts are kept in the login Keychain
   (`ai-usage-claude:<name>`), Codex accounts in `~/.codex-accounts/` (mode 600). Inactive Claude
   accounts show their last known usage: their tokens are never refreshed in the background.
@@ -66,7 +66,7 @@ and must pass `tools/check.sh` (builds, offline tests, secret scan).
 ## Uninstall
 
 Turn off **Open at Login** in the app's settings. Then quit the app, print the status line you
-had before installing (if any — set it back in `~/.claude/settings.json` afterwards if you want
+had before installing (if any; set it back in `~/.claude/settings.json` afterwards if you want
 it), remove everything the installer created, and remove the status line from Claude Code's
 settings:
 
