@@ -28,6 +28,10 @@ for path in sys.argv[1:]:
         ast.parse(f.read(), path, feature_version=(3, 9))
 EOF
 
+step "tests (offline, temp HOME: never touch real accounts)"
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -B -m unittest discover -s tests -q 2> "$tmp/tests" \
+  || { cat "$tmp/tests"; fail "tests"; }
+
 # Same compiler invocations as app/build.sh and tools/screenshots/render.sh, output in $tmp.
 step "app builds"
 xcrun swiftc -parse-as-library -O -swift-version 5 -target "$(uname -m)-apple-macosx14.0" \

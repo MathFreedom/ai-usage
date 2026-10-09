@@ -2,8 +2,8 @@
 
 Every change, code or docs, small or not, goes through this audit before it is pushed (the
 full method of [PROCESS](PROCESS.md) — investigation, grill, plan — is for non-trivial
-changes). Adapted for a project
-without CI or test suite: the proof is execution, and `tools/check.sh` is the shared pre-flight.
+changes). Adapted for a project without CI: the proof is execution, and `tools/check.sh`
+(which runs the offline tests in `tests/`) is the shared pre-flight.
 
 ## Cardinal rules
 
@@ -72,7 +72,15 @@ report defects unrelated to it.
 3. Never restore files with a broad `git checkout --` or `stash`: it also wipes uncommitted edits.
    Commit first.
 
+## Mutations — proof that a test catches its bug
+
+Each guard added or changed in `bin/` or `claude/` (an overwrite refusal, an account match, a
+merge rule…) is proven by **mutation**, in the throwaway worktree, on committed code: break the
+behavior, run `tools/check.sh`, see a test fail; restore, see it pass again. A guard whose mutation
+no test catches is a finding (missing test). The app's SwiftUI views are not unit-tested; their
+proof is a build plus a visual check (screenshots).
+
 ## Exit criteria
 
-No confirmed finding left · `check: OK` on the audited commit · delta since the audit empty or
-re-audited · the owner has seen the verdict.
+No confirmed finding left · `check: OK` (tests included) on the audited commit · mutations of the
+changed guards caught · delta since the audit empty or re-audited · the owner has seen the verdict.
