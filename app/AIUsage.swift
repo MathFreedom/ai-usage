@@ -70,10 +70,10 @@ enum Language: String, CaseIterable, Identifiable {
     case english = "en", french = "fr"
     static let key = "language"
 
-    /// The saved choice, else the Mac's preferred language.
+    /// The saved choice, else English.
     static var current: Language {
         if let raw = UserDefaults.standard.string(forKey: key), let saved = Language(rawValue: raw) { return saved }
-        return Locale.preferredLanguages.first?.hasPrefix("fr") == true ? .french : .english
+        return .english
     }
 
     var id: String { rawValue }

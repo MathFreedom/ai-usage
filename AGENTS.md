@@ -62,7 +62,7 @@ Edits in the repo are live for `cx`, `ccx` and the status line (symlinks). The a
   Language) and Quit.
 - Settings, saved in UserDefaults: `theme` (`Theme`: system/light/dark, applied with
   `NSApp.appearance` to the panel and its menus; the menu bar label keeps following the menu bar)
-  and `language` (`Language`: English/French, defaults to the Mac's preferred language). Strings
+  and `language` (`Language`: English/French, English until changed in the settings). Strings
   go through `tr(en, fr)`, limit names through `windowName`, English messages printed by cx/ccx
   through `localized` (regex table — add new CLI messages there). The panel is rebuilt with
   `.id(language)` when it changes. Dates use the language's locale (en_GB / fr_FR).
