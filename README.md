@@ -64,7 +64,7 @@ extensions need a restart.
 - **Logos** are taken from the Claude and ChatGPT apps when installed; SF Symbols otherwise.
 
 [`AGENTS.md`](AGENTS.md) documents the internals; changes follow [`docs/PROCESS.md`](docs/PROCESS.md)
-and must pass `tools/check.sh`.
+and must pass `tools/check.sh` (builds, offline tests, secret scan).
 
 ## Uninstall
 

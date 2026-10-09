@@ -15,7 +15,7 @@ still goes through the independent audit before it is pushed. The owner signs of
 - **Status quo**: what the code actually does today, on an up-to-date `origin/main` (a local
   checkout may lag behind) — the real call sites, `AGENTS.md`, and what the listing commands
   print (`cx`, `ccx`, `cx json`, `ccx json`: not read-only — they refresh the active account's
-  saved copy and ccx's usage cache, as the app does — but safe to run).
+  own saved copy and ccx's caches, as the app does — but safe to run; see PROCESS_AUDIT).
 - **Strategy**: the possible options compared on effort, risk, impact and maintenance, with a
   recommendation for the **simplest** good one — not the first that works.
 - Live data that the repo can't show (an account's plan, a provider's API behavior) is checked
@@ -37,8 +37,9 @@ exists at step 3.
      installer; data flow; what is shared with Claude Code, Codex and the Keychain.
   2. **Code quality** — repetition, error handling, missing edge cases, over- or
      under-engineering.
-  3. **Verification** — there is no test suite: what will prove the change works (commands to
-     run, states to reproduce, screenshots), and which failure modes stay unchecked.
+  3. **Verification** — what will prove the change works: tests in `tests/` (run by
+     `tools/check.sh`) for `cx`, `ccx` and the status line; for the app, a build plus a visual
+     check; and which failure modes stay unchecked.
   4. **Performance & energy** — polling, process spawns, Keychain calls, rate-limited endpoints
      (`/api/oauth/usage` answers 429 when polled too often).
 - One section at a time, pausing after each. Issues are **numbered**, options **lettered**, each

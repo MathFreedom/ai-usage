@@ -2,8 +2,8 @@
 
 Every change, code or docs, small or not, goes through this audit before it is pushed (the
 full method of [PROCESS](PROCESS.md) — investigation, grill, plan — is for non-trivial
-changes). Adapted for a project
-without CI or test suite: the proof is execution, and `tools/check.sh` is the shared pre-flight.
+changes). Adapted for a project without CI: the proof is execution, and `tools/check.sh`
+(which runs the offline tests in `tests/`) is the shared pre-flight.
 
 ## Cardinal rules
 
@@ -44,11 +44,13 @@ report defects unrelated to it.
   line of reasoning never beats an execution.
 - `tools/check.sh` must end with `check: OK` in the worktree.
 - **Never touches the owner's real data**: no `cx`/`ccx` `use`, `add`, `save` or `rm`, no
-  Keychain writes, no change to `~/.codex`, `~/.claude.json`, `~/.claude/settings.json`, no
-  `install.sh`. Listing commands (`cx`, `ccx`, `cx json`, `ccx json`) are not read-only — they
-  refresh the active account's saved copy and ccx's usage cache, as the app does every 10
-  minutes — but they are safe to run. Anything else that writes runs with a temporary `HOME`
-  (the login Keychain is then out of reach).
+  change to `~/.codex`, `~/.claude.json`, `~/.claude/settings.json`, no `install.sh`. The only
+  writes an auditor may trigger come from the listing commands (`cx`, `ccx`, `cx json`,
+  `ccx json`), as the app does every 10 minutes: refresh the active account's own saved copy
+  (`~/.codex-accounts/<name>.json`, Keychain item `ai-usage-claude:<name>`), cx's lock file
+  `~/.codex-accounts/.lock` (and its short-lived `.cx-*` temp files), and ccx's files in `~/.config/ai-usage/` (metadata, usage, identity
+  cache). Anything else that writes runs with a
+  temporary `HOME` (the login Keychain is then out of reach).
 - Reports each finding with file:line, a concrete failing scenario, and the minimal fix, ranked
   by severity — or says plainly that the diff is fine.
 - Verdict: **SAFE** or **NOT SAFE**.
@@ -72,7 +74,15 @@ report defects unrelated to it.
 3. Never restore files with a broad `git checkout --` or `stash`: it also wipes uncommitted edits.
    Commit first.
 
+## Mutations — proof that a test catches its bug
+
+Each guard added or changed in `bin/` or `claude/` (an overwrite refusal, an account match, a
+merge rule…) is proven by **mutation**, in the throwaway worktree, on committed code: break the
+behavior, run `tools/check.sh`, see a test fail; restore, see it pass again. A guard whose mutation
+no test catches is a finding (missing test). The app's SwiftUI views are not unit-tested; their
+proof is a build plus a visual check (screenshots).
+
 ## Exit criteria
 
-No confirmed finding left · `check: OK` on the audited commit · delta since the audit empty or
-re-audited · the owner has seen the verdict.
+No confirmed finding left · `check: OK` (tests included) on the audited commit · mutations of the
+changed guards caught · delta since the audit empty or re-audited · the owner has seen the verdict.

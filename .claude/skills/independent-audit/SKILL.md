@@ -15,9 +15,10 @@ rules, what the auditor gets, arbitration, lessons). This is the condensed seque
 3. Launch an auditor agent with: the repo path, the local branch, the diff base, the objective,
    and the instructions to work in a throwaway detached worktree
    (`git worktree add --detach /tmp/wt-audit-<name> <branch>`), run `tools/check.sh` there, prove
-   by execution, never touch the owner's real accounts or settings (temporary `HOME` for anything
-   that writes), remove the worktree, and answer SAFE or NOT SAFE with ranked findings
-   (file:line, failing scenario, minimal fix).
+   by execution, prove each changed guard by mutation (break it, see a test fail, restore),
+   never touch the owner's real accounts or settings (temporary `HOME` for anything that
+   writes), remove the worktree, and answer SAFE or NOT SAFE with ranked findings (file:line,
+   failing scenario, minimal fix).
 4. **Settle every finding** (fix, or arbitrate per the protocol — blind double check only for a
    disputed one). Before committing the fixes, compare `git diff --staged` with the list you
    announce.
