@@ -19,6 +19,14 @@ case "$current" in
   *statusline-cache.sh*) ;;  # already ours, in whatever form
   *)
     [ -f "$settings.bak-ai-usage" ] || cp "$settings" "$settings.bak-ai-usage"  # keep the first backup
+    # Written through (not replaced): a settings.json symlinked from a dotfiles repo stays a link.
+    # One command per line so that `set -e` stops the install if any of them fails, before
+    # anything below claims it worked.
+    tmp=$(mktemp)
+    trap 'rm -f "$tmp"' EXIT
+    jq '.statusLine = {"type": "command", "command": "~/.claude/statusline-cache.sh", "refreshInterval": 60}' \
+      "$settings" > "$tmp"
+    cat "$tmp" > "$settings"
     if [ -n "$current" ]; then  # keep feeding the previous status line command
       mkdir -p "$HOME/.config/ai-usage"
       printf '%s\n' "$current" > "$HOME/.config/ai-usage/statusline-chain"
@@ -26,10 +34,7 @@ case "$current" in
       echo "  $current"
       echo "Delete ~/.config/ai-usage/statusline-chain to stop it."
     fi
-    tmp=$(mktemp)
-    jq '.statusLine = {"type": "command", "command": "~/.claude/statusline-cache.sh", "refreshInterval": 60}' \
-      "$settings" > "$tmp" && mv "$tmp" "$settings"
-    echo "Claude Code status line configured (previous settings: $settings.bak-ai-usage)"
+    echo "Claude Code status line configured (settings before the first install: $settings.bak-ai-usage)"
     ;;
 esac
 

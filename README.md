@@ -17,7 +17,7 @@ switch between your accounts.
 - **Accounts** — save several Claude Code and Codex accounts, switch with a click or from the
   terminal (`ccx`, `cx`).
 - **Status line** for Claude Code: `Opus 5.5 │ cache 47m │ session: 3h29 5% │ weekly: 5d 2%`.
-- **Settings** (⚙︎): open at login, English or French.
+- **Settings** (⚙︎): open at login, appearance (automatic, light, dark), English or French.
 
 ## Install
 
@@ -68,14 +68,17 @@ and must pass `tools/check.sh` (builds, offline tests, secret scan).
 
 ## Uninstall
 
-Turn off **Open at Login** in the app's settings, then:
+Turn off **Open at Login** in the app's settings. Then quit the app, print the status line you
+had before installing (if any — set it back in `~/.claude/settings.json` afterwards if you want
+it), remove everything the installer created, and remove the status line from Claude Code's
+settings:
 
 ```sh
 osascript -e 'quit app "AI Usage"'
+jq .statusLine ~/.claude/settings.json.bak-ai-usage
 rm -rf ~/Applications/AI\ Usage.app ~/.local/bin/cx ~/.local/bin/ccx
-rm -rf ~/.codex-accounts ~/.config/ai-usage ~/.claude/usage-cache.json
-# Claude Code status line: remove it (or put your previous one back)
-tmp=$(mktemp) && jq 'del(.statusLine)' ~/.claude/settings.json > "$tmp" && mv "$tmp" ~/.claude/settings.json
+rm -rf ~/.codex-accounts ~/.config/ai-usage ~/.claude/usage-cache.json ~/.claude/settings.json.bak-ai-usage
+tmp=$(mktemp) && jq 'del(.statusLine)' ~/.claude/settings.json > "$tmp" && cat "$tmp" > ~/.claude/settings.json && rm "$tmp"
 rm ~/.claude/statusline-cache.sh
 ```
 
