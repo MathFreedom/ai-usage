@@ -36,8 +36,14 @@ Edits in the repo are live for `cx`, `ccx` and the status line (symlinks). The a
   `ccx add` / `cx add`) and refresh; card "Claude" (bars per limit with one saved account, account
   rows like Codex with two or more); card "Codex" (one row per account, click to switch,
   checkmark on active, free resets line). Rows share `AccountRow` / `AccountList` (`Account`
-  model with a `brand`).
-  footer "Open at login" (`SMAppService.mainApp`) and Quit.
+  model with a `brand`). Footer: gear menu (Open at Login via `SMAppService.mainApp`, Appearance,
+  Language) and Quit.
+- Settings, saved in UserDefaults: `theme` (`Theme`: system/light/dark, applied with
+  `NSApp.appearance` to the panel and its menus; the menu bar label keeps following the menu bar)
+  and `language` (`Language`: English/French, defaults to the Mac's preferred language). Strings
+  go through `tr(en, fr)`, limit names through `windowName`, English messages printed by cx/ccx
+  through `localized` (regex table — add new CLI messages there). The panel is rebuilt with
+  `.id(language)` when it changes. Dates use the language's locale (en_GB / fr_FR).
 - Refresh: every 10 min (timer tolerance 60 s, energy), and when the panel window becomes key if data is older than 30 s.
 - Design brief from the owner: Apple look, discreet, sober. Colors by percentage only:
   green < 50, orange ≥ 50, red ≥ 80. Reset line = "Resets in 3h 26m" left (secondary) + exact
