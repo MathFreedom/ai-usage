@@ -588,8 +588,8 @@ struct NoAccountCard: View {
         VStack(spacing: 6) {
             Image(systemName: "gauge.with.needle").font(.system(size: 20)).foregroundStyle(.secondary)
             Text(tr("No accounts yet", "Aucun compte pour l’instant")).font(.system(size: 13, weight: .semibold))
-            Text(tr("Sign in to Claude Code or Codex, or add an account with +",
-                    "Connectez-vous à Claude Code ou Codex, ou ajoutez un compte avec +"))
+            Text(tr("Add one with +, or save the one you’re signed in to with ccx save or cx save",
+                    "Ajoutez-en un avec +, ou enregistrez celui auquel vous êtes connecté avec ccx save ou cx save"))
                 .font(.system(size: 11)).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)  // wrap instead of truncating in the fitted panel
         }
