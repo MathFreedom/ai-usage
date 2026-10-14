@@ -377,13 +377,14 @@ final class UsageModel: ObservableObject {
             let accounts = await Task.detached { parseClaude(runTool(ccxPath, ["json"])) }.value
             if let accounts { claudeAccounts = accounts }
             checkClaudeSwitch()
+            var answered = accounts != nil  // a failed ccx or usage API call says nothing about Claude being unused
             if let active = claudeAccounts.first(where: \.active) {
                 claude = active.windows
                 claudeUpdated = active.lastSeen ?? Date()
-            } else {
-                await refreshClaudeFromKeychain()
+            } else if !(await refreshClaudeFromKeychain()) {
+                answered = false
             }
-            claudeUnused = claudeAccounts.isEmpty && claude.isEmpty
+            if answered { claudeUnused = claudeAccounts.isEmpty && claude.isEmpty }
             updateMenuBarImage()
         }
         Task.detached {
@@ -403,15 +404,17 @@ final class UsageModel: ObservableObject {
     var showsCodex: Bool { !codexLoaded || !codex.isEmpty || codexFailed || notes[.openai] != nil }
 
     /// No account saved with ccx: read the usage API with Claude Code's own token.
-    private func refreshClaudeFromKeychain() async {
+    /// False when a token was found but the API didn't answer (429, offline): nothing learned.
+    private func refreshClaudeFromKeychain() async -> Bool {
         if auth?.valid != true { auth = await Task.detached { claudeAuth() }.value }
-        guard let token = auth?.token else { return }
+        guard let token = auth?.token else { return true }
         if let live = await fetchClaudeLive(token: token) {
             claude = live
             claudeUpdated = Date()
-        } else {
-            auth = nil  // revoked or rotated by Claude Code: re-read the Keychain next time
+            return true
         }
+        auth = nil  // revoked or rotated by Claude Code: re-read the Keychain next time
+        return false
     }
 
     /// An open Claude Code session refreshing its token can write the previous account back.
@@ -588,8 +591,8 @@ struct NoAccountCard: View {
         VStack(spacing: 6) {
             Image(systemName: "gauge.with.needle").font(.system(size: 20)).foregroundStyle(.secondary)
             Text(tr("No accounts yet", "Aucun compte pour l’instant")).font(.system(size: 13, weight: .semibold))
-            Text(tr("Add one with +, or save the one you’re signed in to with ccx save or cx save",
-                    "Ajoutez-en un avec +, ou enregistrez celui auquel vous êtes connecté avec ccx save ou cx save"))
+            Text(tr("Add one with +, or save the one you’re signed in to with ccx\u{00A0}save or cx\u{00A0}save",
+                    "Ajoutez-en un avec +, ou enregistrez celui auquel vous êtes connecté avec ccx\u{00A0}save ou cx\u{00A0}save"))
                 .font(.system(size: 11)).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)  // wrap instead of truncating in the fitted panel
         }
