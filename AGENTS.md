@@ -58,8 +58,10 @@ Edits in the repo are live for `cx`, `ccx` and the status line (symlinks). The a
   `ccx add` / `cx add`) and refresh; card "Claude" (bars per limit with one saved account, account
   rows like Codex with two or more); card "Codex" (one row per account, click to switch,
   checkmark on active, free resets line). Rows share `AccountRow` / `AccountList` (`Account`
-  model with a `brand`). Footer: gear menu (Open at Login via `SMAppService.mainApp`, Appearance,
-  Language) and Quit.
+  model with a `brand`). A card is hidden once its first refresh is done with nothing to show
+  (no account, no data, no error, no note: the tool isn't used; `showsClaude` / `showsCodex`);
+  with neither, `NoAccountCard` ("No accounts yet") takes their place. Footer: gear menu (Open
+  at Login via `SMAppService.mainApp`, Appearance, Language) and Quit.
 - Settings, saved in UserDefaults: `theme` (`Theme`: system/light/dark, applied with
   `NSApp.appearance` to the panel and its menus; the menu bar label keeps following the menu bar)
   and `language` (`Language`: English/French, English until changed in the settings). Strings

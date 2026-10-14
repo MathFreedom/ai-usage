@@ -10,7 +10,7 @@ switch between your accounts.
 - **Menu bar**: the most used limit of each provider, colored only when it matters
   (orange from 50 %, red from 80 %).
 - **Panel**: every limit with its countdown and exact reset time: Claude's 5-hour, weekly and
-  per-model windows, Codex's windows and free resets.
+  per-model windows, Codex's windows and free resets. A provider you don't use stays out of the way.
 - **Accounts**: save several Claude Code and Codex accounts, switch with a click or from the
   terminal (`ccx`, `cx`).
 - **Status line** for Claude Code: `Opus 5.5 │ cache 47m │ session: 3h29 5% │ weekly: 5d 2%`.
