@@ -334,6 +334,8 @@ final class UsageModel: ObservableObject {
     @Published var codex: [Account] = []
     @Published var codexFailed = false
     @Published var claudeAccounts: [Account] = []  // from ccx; rows shown once 2+ accounts are saved
+    @Published var claudeUnused = false  // last Claude refresh ended with no account nor data (set at its end: refresh() first reloads the cache)
+    @Published var codexLoaded = false
     @Published var loading = false
     @Published var switching: String?  // Account.key being switched to
     @Published var notes: [Brand: String] = [:]  // e.g. apps or sessions to restart after a switch
@@ -375,12 +377,14 @@ final class UsageModel: ObservableObject {
             let accounts = await Task.detached { parseClaude(runTool(ccxPath, ["json"])) }.value
             if let accounts { claudeAccounts = accounts }
             checkClaudeSwitch()
+            var answered = accounts != nil  // a failed ccx or usage API call says nothing about Claude being unused
             if let active = claudeAccounts.first(where: \.active) {
                 claude = active.windows
                 claudeUpdated = active.lastSeen ?? Date()
-            } else {
-                await refreshClaudeFromKeychain()
+            } else if !(await refreshClaudeFromKeychain()) {
+                answered = false
             }
+            if answered { claudeUnused = claudeAccounts.isEmpty && claude.isEmpty }
             updateMenuBarImage()
         }
         Task.detached {
@@ -388,22 +392,29 @@ final class UsageModel: ObservableObject {
             await MainActor.run {
                 self.loading = false
                 self.codexFailed = accounts == nil
+                self.codexLoaded = true
                 if let accounts { self.codex = accounts }
                 self.updateMenuBarImage()
             }
         }
     }
 
+    /// A provider's card stays out of the panel once loaded with nothing to show (tool not used).
+    var showsClaude: Bool { !claudeUnused || !claudeAccounts.isEmpty || !claude.isEmpty || notes[.claude] != nil }
+    var showsCodex: Bool { !codexLoaded || !codex.isEmpty || codexFailed || notes[.openai] != nil }
+
     /// No account saved with ccx: read the usage API with Claude Code's own token.
-    private func refreshClaudeFromKeychain() async {
+    /// False when a token was found but the API didn't answer (429, offline): nothing learned.
+    private func refreshClaudeFromKeychain() async -> Bool {
         if auth?.valid != true { auth = await Task.detached { claudeAuth() }.value }
-        guard let token = auth?.token else { return }
+        guard let token = auth?.token else { return true }
         if let live = await fetchClaudeLive(token: token) {
             claude = live
             claudeUpdated = Date()
-        } else {
-            auth = nil  // revoked or rotated by Claude Code: re-read the Keychain next time
+            return true
         }
+        auth = nil  // revoked or rotated by Claude Code: re-read the Keychain next time
+        return false
     }
 
     /// An open Claude Code session refreshing its token can write the previous account back.
@@ -574,6 +585,23 @@ struct Card<Content: View>: View {
     }
 }
 
+/// Shown instead of the cards when neither Claude Code nor Codex has anything to show.
+struct NoAccountCard: View {
+    var body: some View {
+        VStack(spacing: 6) {
+            Image(systemName: "gauge.with.needle").font(.system(size: 20)).foregroundStyle(.secondary)
+            Text(tr("No accounts yet", "Aucun compte pour l’instant")).font(.system(size: 13, weight: .semibold))
+            Text(tr("Add one with +, or save the one you’re signed in to with ccx\u{00A0}save or cx\u{00A0}save",
+                    "Ajoutez-en un avec +, ou enregistrez celui auquel vous êtes connecté avec ccx\u{00A0}save ou cx\u{00A0}save"))
+                .font(.system(size: 11)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)  // wrap instead of truncating in the fitted panel
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity)
+        .background(.quinary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
 struct UsageBar: View {
     let window: UsageWindow
 
@@ -735,24 +763,32 @@ struct PanelView: View {
             }
             .padding(.horizontal, 2)
 
-            Card("Claude", brand: .claude, note: model.claudeAccounts.count > 1 ? nil : claudeNote) {
-                if model.claudeAccounts.count > 1 {
-                    AccountList(model: model, accounts: model.claudeAccounts)
-                } else {
-                    if model.claude.isEmpty {
-                        Text(tr("No data yet — open Claude Code", "Pas encore de données — ouvrez Claude Code")).font(.system(size: 11)).foregroundStyle(.secondary)
+            if model.showsClaude {
+                Card("Claude", brand: .claude, note: model.claudeAccounts.count > 1 ? nil : claudeNote) {
+                    if model.claudeAccounts.count > 1 {
+                        AccountList(model: model, accounts: model.claudeAccounts)
+                    } else {
+                        if model.claude.isEmpty {
+                            Text(tr("No data yet — open Claude Code", "Pas encore de données — ouvrez Claude Code")).font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                        ForEach(model.claude) { UsageBar(window: $0) }
                     }
-                    ForEach(model.claude) { UsageBar(window: $0) }
+                    NoteLine(text: model.notes[.claude])
                 }
-                NoteLine(text: model.notes[.claude])
             }
 
-            Card("Codex", brand: .openai) {
-                if model.codexFailed {
-                    Text(tr("Couldn't load accounts", "Impossible de charger les comptes")).font(.system(size: 11)).foregroundStyle(.red)
+            if model.showsCodex {
+                Card("Codex", brand: .openai) {
+                    if model.codexFailed {
+                        Text(tr("Couldn't load accounts", "Impossible de charger les comptes")).font(.system(size: 11)).foregroundStyle(.red)
+                    }
+                    AccountList(model: model, accounts: model.codex)
+                    NoteLine(text: model.notes[.openai])
                 }
-                AccountList(model: model, accounts: model.codex)
-                NoteLine(text: model.notes[.openai])
+            }
+
+            if !model.showsClaude && !model.showsCodex {
+                NoAccountCard()
             }
 
             HStack {
