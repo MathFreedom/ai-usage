@@ -334,7 +334,7 @@ final class UsageModel: ObservableObject {
     @Published var codex: [Account] = []
     @Published var codexFailed = false
     @Published var claudeAccounts: [Account] = []  // from ccx; rows shown once 2+ accounts are saved
-    @Published var claudeLoaded = false  // first refresh done: an empty card now means Claude isn't used
+    @Published var claudeUnused = false  // last Claude refresh ended with no account nor data (set at its end: refresh() first reloads the cache)
     @Published var codexLoaded = false
     @Published var loading = false
     @Published var switching: String?  // Account.key being switched to
@@ -383,7 +383,7 @@ final class UsageModel: ObservableObject {
             } else {
                 await refreshClaudeFromKeychain()
             }
-            claudeLoaded = true
+            claudeUnused = claudeAccounts.isEmpty && claude.isEmpty
             updateMenuBarImage()
         }
         Task.detached {
@@ -399,7 +399,7 @@ final class UsageModel: ObservableObject {
     }
 
     /// A provider's card stays out of the panel once loaded with nothing to show (tool not used).
-    var showsClaude: Bool { !claudeLoaded || !claudeAccounts.isEmpty || !claude.isEmpty || notes[.claude] != nil }
+    var showsClaude: Bool { !claudeUnused || !claudeAccounts.isEmpty || !claude.isEmpty || notes[.claude] != nil }
     var showsCodex: Bool { !codexLoaded || !codex.isEmpty || codexFailed || notes[.openai] != nil }
 
     /// No account saved with ccx: read the usage API with Claude Code's own token.
