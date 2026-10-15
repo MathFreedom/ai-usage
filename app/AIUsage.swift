@@ -121,6 +121,8 @@ func localized(_ message: String) -> String {
         (#"^Restart open Claude Code sessions \((\d+) running\) to use this account\.$"#,
          "Relancez les sessions Claude Code ouvertes ($1) pour utiliser ce compte."),
         (#"^Restart (.+) to use this account there\.$"#, "Relancez $1 pour y utiliser ce compte."),
+        (#"^The Codex daemon is still running on the previous account: run codex app-server daemon restart in a terminal\.$"#,
+         "Le daemon Codex tourne encore sur le compte précédent : lancez codex app-server daemon restart dans un terminal."),
         (#"^An open Claude Code session switched back to (.+)\. Close it, then switch again\.$"#,
          "Une session Claude Code ouverte est revenue à $1. Fermez-la, puis basculez à nouveau."),
         (#"^token expired \(cx use refreshes it\)$"#, "jeton expiré (cx use le renouvelle)"),
@@ -185,6 +187,8 @@ func runTool(_ path: String, _ args: [String]) -> Data {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
     process.arguments = [path] + args
+    // Tells cx it runs under the app: it then stops the Codex daemon instead of restarting it (see stop_daemon).
+    process.environment = ProcessInfo.processInfo.environment.merging(["AI_USAGE_APP": "1"]) { $1 }
     let out = Pipe()
     process.standardOutput = out
     process.standardError = FileHandle.nullDevice

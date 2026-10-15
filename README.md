@@ -47,8 +47,9 @@ cx save     # Codex
 | Forget | `ccx rm <name>` | `cx rm <name>` |
 
 Adding an account never signs out the active one. After a switch, restart Claude Code sessions
-that were already open; `cx` restarts the Codex daemon itself, but the ChatGPT app and IDE
-extensions need a restart.
+that were already open; `cx` restarts the Codex daemon itself (a switch from the app stops it
+instead, and the next `codex` session starts it again), but the ChatGPT app and IDE extensions
+need a restart.
 
 ## How it works
 

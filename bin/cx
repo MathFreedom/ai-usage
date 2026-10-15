@@ -359,21 +359,64 @@ def daemon_email():
             pass
 
 
+def daemon_running():
+    """Whether the shared app-server daemon runs, from the status `daemon version` prints as JSON;
+    None when it can't tell (no codex, error, unexpected output). With no daemon, codex 0.162
+    fails to connect (exit 1, nothing on stdout), which also gives None."""
+    if not codex_bin():
+        return None
+    try:
+        out = subprocess.run([codex_bin(), "app-server", "daemon", "version"],
+                             capture_output=True, text=True, timeout=15).stdout
+        status = json.loads(out).get("status")
+    except Exception:
+        return None
+    return {"running": True, "notRunning": False}.get(status)
+
+
 def restart_daemon():
     """Restart the shared app-server daemon if running: it caches auth in memory and
     `codex` attaches to it, so new sessions would otherwise keep the previous account."""
-    if not codex_bin():
+    if not daemon_running():
         return False
     try:
-        status = subprocess.run([codex_bin(), "app-server", "daemon", "version"],
-                                capture_output=True, text=True, timeout=15).stdout
-        if '"running"' not in status:
-            return False
         subprocess.run([codex_bin(), "app-server", "daemon", "restart"],
                        capture_output=True, text=True, timeout=60)
         return True
     except Exception:
         return False
+
+
+def stop_daemon():
+    """Stop the shared app-server daemon if running, instead of restarting it, when cx runs under
+    the app (AI_USAGE_APP=1): macOS attributes a process the app starts to the app, so a daemon
+    restarted from here would make every codex session ask for privacy access in its name.
+    `codex` starts the daemon again by itself (daemon_auto_start), from the user's terminal.
+    None if it wasn't running (or can't tell); True once `daemon stop` reports it stopped and
+    `daemon version` no longer finds it running; False if it may still run."""
+    if not daemon_running():
+        return None
+    try:
+        out = subprocess.run([codex_bin(), "app-server", "daemon", "stop"],
+                             capture_output=True, text=True, timeout=60).stdout
+        status = json.loads(out).get("status")
+    except Exception:
+        return False
+    return status in ("stopped", "notRunning") and daemon_running() is not True
+
+
+def under_app():
+    return os.environ.get("AI_USAGE_APP") == "1"
+
+
+def report_stop():
+    """Stop the daemon (cx run by the app) and say what new codex sessions will get."""
+    stopped = stop_daemon()
+    if stopped:
+        print(f"{DIM}Codex daemon stopped: the next codex session starts it on this account.{RESET}")
+    elif stopped is False:
+        print("NOTE: The Codex daemon is still running on the previous account: "
+              "run codex app-server daemon restart in a terminal.")
 
 
 def other_codex_hosts():
@@ -400,6 +443,9 @@ def cmd_use(name):
         loaded = daemon_email()
         if loaded in (None, target_email):
             print(f"Already on \"{name}\".")
+        elif under_app():
+            print(f"Already on \"{name}\"; the Codex daemon was still on {loaded}.")
+            report_stop()
         elif restart_daemon():
             print(f"The Codex daemon was still on {loaded}: restarted on \"{name}\".")
         return
@@ -409,7 +455,9 @@ def cmd_use(name):
         print(f"{YELLOW}The active account was not saved; backed up to {backup}{RESET}")
     write_private(AUTH, load(accs[name]))
     print(f"Codex now uses \"{name}\" ({identity(load(AUTH))[0]}).")
-    if restart_daemon():
+    if under_app():
+        report_stop()
+    elif restart_daemon():
         loaded = daemon_email()
         if loaded == target_email:
             print(f"{DIM}Codex daemon restarted and verified: new codex sessions use this account.{RESET}")
