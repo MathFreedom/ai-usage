@@ -122,7 +122,7 @@ empirically:
   `initialize` → `initialized` → `account/read`. (`codex app-server proxy` over stdio did not
   answer; the socket speaks WebSocket.)
 - Run by the app (`runTool` sets `AI_USAGE_APP=1`), `cx use` **stops** the daemon instead
-  (`codex app-server daemon stop`: stopped once it reports `stopped` and `daemon version` no longer
+  (`codex app-server daemon stop`: stopped once it reports `stopped` or `notRunning` and `daemon version` no longer
   finds it, which then fails to connect; `NOTE:` otherwise).
   macOS attributes a process to the app that started it, even once detached: a daemon restarted
   by the app made every `codex` session ask for privacy access (Music, folders…) in AI Usage's
@@ -130,7 +130,7 @@ empirically:
   (`daemon_auto_start`, on by default), from the user's terminal, with the new `auth.json`.
 - The ChatGPT desktop app (embedded Codex) and the Cursor extension run their own app-servers:
   they need a restart. `cx use` prints `NOTE: Restart ChatGPT and Cursor…`; the app shows that
-  line under the Codex card.
+  line under the Codex card, unless the daemon `NOTE:` comes first (the app shows only the first).
 - Restarting or stopping the daemon may interrupt running `codex` CLI sessions.
 
 ## `ccx` — Claude Code accounts

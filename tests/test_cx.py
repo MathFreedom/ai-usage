@@ -234,7 +234,7 @@ class UseFromAppTest(CxTestCase):
         self.assertIn("daemon was still on bob@example.com", out)
 
     def test_other_values_keep_the_terminal_behavior(self):
-        for value in ("0", "", "true"):
+        for value in ("0", "", "true", " 1"):
             os.environ["AI_USAGE_APP"] = value
             self.stops.clear()
             self.restarts.clear()
@@ -250,6 +250,9 @@ class DaemonCommandsTest(SafeTestCase):
     RUNNING = '{"status":"running","backend":"pid"}'
     NOT_RUNNING = '{"status":"notRunning"}'
     GONE = ("", 1)  # what codex 0.162 `daemon version` gives once no daemon runs: it can't connect
+    # `daemon version` answers that don't say "running": no daemon to stop or restart
+    CANT_TELL = (GONE, NOT_RUNNING, '{"status":"weird"}', 'error: "running" state unknown',
+                 subprocess.TimeoutExpired("codex", 15))
 
     def setUp(self):
         super().setUp()
@@ -279,11 +282,13 @@ class DaemonCommandsTest(SafeTestCase):
         return subprocess.CompletedProcess(args, code, out, "")
 
     def test_stop_reported_and_daemon_gone(self):
-        for after in (self.GONE, self.NOT_RUNNING, subprocess.TimeoutExpired("codex", 15)):
-            self.calls.clear()
-            self.versions = [self.RUNNING, after]
-            self.assertIs(self.cx.stop_daemon(), True, after)
-            self.assertEqual(self.calls, ["version", "stop", "version"])
+        for stop in ('{"status":"stopped"}', '{"status":"notRunning"}'):
+            for after in (self.GONE, self.NOT_RUNNING, subprocess.TimeoutExpired("codex", 15)):
+                self.calls.clear()
+                self.versions = [self.RUNNING, after]
+                self.stop = stop
+                self.assertIs(self.cx.stop_daemon(), True, (stop, after))
+                self.assertEqual(self.calls, ["version", "stop", "version"])
 
     def test_stop_that_leaves_it_running(self):
         self.versions = [self.RUNNING, self.RUNNING]
@@ -300,16 +305,18 @@ class DaemonCommandsTest(SafeTestCase):
             self.assertEqual(self.calls, ["version", "stop"])
 
     def test_stop_when_not_running_does_nothing(self):
-        self.versions = [self.NOT_RUNNING]
-        self.assertIsNone(self.cx.stop_daemon())
-        self.assertEqual(self.calls, ["version"])
+        for version in self.CANT_TELL:
+            self.calls.clear()
+            self.versions = [version]
+            self.assertIsNone(self.cx.stop_daemon(), version)
+            self.assertEqual(self.calls, ["version"])
 
     def test_restart_unchanged(self):
         self.versions = [self.RUNNING]
         self.assertIs(self.cx.restart_daemon(), True)
         self.assertEqual(self.calls, ["version", "restart"])
         self.calls.clear()
-        for version in (self.NOT_RUNNING, subprocess.TimeoutExpired("codex", 15), ("", 1)):
+        for version in self.CANT_TELL:
             self.calls.clear()
             self.versions = [version]
             self.assertIs(self.cx.restart_daemon(), False, version)
