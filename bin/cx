@@ -360,15 +360,17 @@ def daemon_email():
 
 
 def daemon_running():
-    """Whether the shared app-server daemon runs; None when it can't tell (no codex, error)."""
+    """Whether the shared app-server daemon runs, from the status `daemon version` prints as JSON;
+    None when it can't tell (no codex, error, unexpected output)."""
     if not codex_bin():
         return None
     try:
-        status = subprocess.run([codex_bin(), "app-server", "daemon", "version"],
-                                capture_output=True, text=True, timeout=15).stdout
+        out = subprocess.run([codex_bin(), "app-server", "daemon", "version"],
+                             capture_output=True, text=True, timeout=15).stdout
+        status = json.loads(out).get("status")
     except Exception:
         return None
-    return '"running"' in status
+    return {"running": True, "notRunning": False}.get(status)
 
 
 def restart_daemon():

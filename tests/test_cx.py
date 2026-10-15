@@ -254,7 +254,7 @@ class DaemonCommandsTest(SafeTestCase):
         super().setUp()
         self.cx = load_tool("cx")
         self.calls = []
-        self.versions = []  # successive outputs of `daemon version` (an Exception item is raised instead)
+        self.versions = []  # successive `daemon version` results: stdout, (stdout, exit code) or an Exception to raise
         patcher = mock.patch.object(self.cx, "codex_bin", lambda: "/fake/codex")
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -265,12 +265,14 @@ class DaemonCommandsTest(SafeTestCase):
     def fake_run(self, args, **kwargs):
         self.assertEqual(args[:3], ["/fake/codex", "app-server", "daemon"])
         self.calls.append(args[3])
-        out = ""
+        out, code = "", 0
         if args[3] == "version":
             out = self.versions.pop(0)
             if isinstance(out, Exception):
                 raise out
-        return subprocess.CompletedProcess(args, 0, out, "")
+            if isinstance(out, tuple):
+                out, code = out
+        return subprocess.CompletedProcess(args, code, out, "")
 
     def test_stop_then_verified(self):
         self.versions = [self.RUNNING, self.NOT_RUNNING]
@@ -286,6 +288,13 @@ class DaemonCommandsTest(SafeTestCase):
         self.versions = [self.RUNNING, subprocess.TimeoutExpired("codex", 15)]
         self.assertIs(self.cx.stop_daemon(), False)
 
+    def test_stop_with_a_failed_check_is_not_reported_as_stopped(self):
+        for after in (("", 1), ("error: no daemon socket", 1), ('{"status":"weird"}', 0)):
+            self.calls.clear()
+            self.versions = [self.RUNNING, after]
+            self.assertIs(self.cx.stop_daemon(), False, after)
+            self.assertEqual(self.calls, ["version", "stop", "version"])
+
     def test_stop_when_not_running_does_nothing(self):
         self.versions = [self.NOT_RUNNING]
         self.assertIsNone(self.cx.stop_daemon())
@@ -296,9 +305,11 @@ class DaemonCommandsTest(SafeTestCase):
         self.assertIs(self.cx.restart_daemon(), True)
         self.assertEqual(self.calls, ["version", "restart"])
         self.calls.clear()
-        self.versions = [self.NOT_RUNNING]
-        self.assertIs(self.cx.restart_daemon(), False)
-        self.assertEqual(self.calls, ["version"])
+        for version in (self.NOT_RUNNING, subprocess.TimeoutExpired("codex", 15), ("", 1)):
+            self.calls.clear()
+            self.versions = [version]
+            self.assertIs(self.cx.restart_daemon(), False, version)
+            self.assertEqual(self.calls, ["version"])
 
     def test_without_codex_nothing_runs(self):
         with mock.patch.object(self.cx, "codex_bin", lambda: None):
