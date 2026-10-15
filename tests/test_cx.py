@@ -251,7 +251,8 @@ class DaemonCommandsTest(SafeTestCase):
     NOT_RUNNING = '{"status":"notRunning"}'
     GONE = ("", 1)  # what codex 0.162 `daemon version` gives once no daemon runs: it can't connect
     # `daemon version` answers that don't say "running": no daemon to stop or restart
-    CANT_TELL = (GONE, NOT_RUNNING, '{"status":"weird"}', 'error: "running" state unknown',
+    CANT_TELL = (GONE, NOT_RUNNING, '{"status":"starting"}', '{"status":"weird"}',
+                 'error: "running" state unknown',
                  subprocess.TimeoutExpired("codex", 15))
 
     def setUp(self):
