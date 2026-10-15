@@ -122,7 +122,8 @@ empirically:
   `initialize` → `initialized` → `account/read`. (`codex app-server proxy` over stdio did not
   answer; the socket speaks WebSocket.)
 - Run by the app (`runTool` sets `AI_USAGE_APP=1`), `cx use` **stops** the daemon instead
-  (`codex app-server daemon stop`, checked with `daemon version`; `NOTE:` if it still runs).
+  (`codex app-server daemon stop`: stopped once it reports `stopped` and `daemon version` no longer
+  finds it, which then fails to connect; `NOTE:` otherwise).
   macOS attributes a process to the app that started it, even once detached: a daemon restarted
   by the app made every `codex` session ask for privacy access (Music, folders…) in AI Usage's
   name, without the terminal's grants (#14). `codex` starts the daemon again by itself

@@ -249,12 +249,16 @@ class DaemonCommandsTest(SafeTestCase):
 
     RUNNING = '{"status":"running","backend":"pid"}'
     NOT_RUNNING = '{"status":"notRunning"}'
+    GONE = ("", 1)  # what codex 0.162 `daemon version` gives once no daemon runs: it can't connect
 
     def setUp(self):
         super().setUp()
         self.cx = load_tool("cx")
         self.calls = []
-        self.versions = []  # successive `daemon version` results: stdout, (stdout, exit code) or an Exception to raise
+        # Successive `daemon version` results, and the `daemon stop` result: stdout,
+        # (stdout, exit code) or an Exception to raise.
+        self.versions = []
+        self.stop = '{"status":"stopped"}'
         patcher = mock.patch.object(self.cx, "codex_bin", lambda: "/fake/codex")
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -266,34 +270,34 @@ class DaemonCommandsTest(SafeTestCase):
         self.assertEqual(args[:3], ["/fake/codex", "app-server", "daemon"])
         self.calls.append(args[3])
         out, code = "", 0
-        if args[3] == "version":
-            out = self.versions.pop(0)
+        if args[3] in ("version", "stop"):
+            out = self.versions.pop(0) if args[3] == "version" else self.stop
             if isinstance(out, Exception):
                 raise out
             if isinstance(out, tuple):
                 out, code = out
         return subprocess.CompletedProcess(args, code, out, "")
 
-    def test_stop_then_verified(self):
-        self.versions = [self.RUNNING, self.NOT_RUNNING]
-        self.assertIs(self.cx.stop_daemon(), True)
-        self.assertEqual(self.calls, ["version", "stop", "version"])
+    def test_stop_reported_and_daemon_gone(self):
+        for after in (self.GONE, self.NOT_RUNNING, subprocess.TimeoutExpired("codex", 15)):
+            self.calls.clear()
+            self.versions = [self.RUNNING, after]
+            self.assertIs(self.cx.stop_daemon(), True, after)
+            self.assertEqual(self.calls, ["version", "stop", "version"])
 
     def test_stop_that_leaves_it_running(self):
         self.versions = [self.RUNNING, self.RUNNING]
         self.assertIs(self.cx.stop_daemon(), False)
         self.assertEqual(self.calls, ["version", "stop", "version"])
 
-    def test_stop_unverifiable_is_not_reported_as_stopped(self):
-        self.versions = [self.RUNNING, subprocess.TimeoutExpired("codex", 15)]
-        self.assertIs(self.cx.stop_daemon(), False)
-
-    def test_stop_with_a_failed_check_is_not_reported_as_stopped(self):
-        for after in (("", 1), ("error: no daemon socket", 1), ('{"status":"weird"}', 0)):
+    def test_stop_not_confirmed_is_not_reported_as_stopped(self):
+        for stop in (("", 1), ("error: permission denied", 1), '{"status":"running"}', '{"status":"weird"}',
+                     subprocess.TimeoutExpired("codex", 60)):
             self.calls.clear()
-            self.versions = [self.RUNNING, after]
-            self.assertIs(self.cx.stop_daemon(), False, after)
-            self.assertEqual(self.calls, ["version", "stop", "version"])
+            self.versions = [self.RUNNING]
+            self.stop = stop
+            self.assertIs(self.cx.stop_daemon(), False, stop)
+            self.assertEqual(self.calls, ["version", "stop"])
 
     def test_stop_when_not_running_does_nothing(self):
         self.versions = [self.NOT_RUNNING]
