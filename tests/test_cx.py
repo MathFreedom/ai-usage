@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import unittest
 from unittest import mock
 
@@ -17,10 +18,14 @@ class CxTestCase(SafeTestCase):
         super().setUp()
         self.cx = load_tool("cx")
         # Daemon, other apps and usage are faked: no process, socket or network.
+        os.environ.pop("AI_USAGE_APP", None)  # run as from a terminal unless a test says otherwise
         self.restarts = []
+        self.stops = []
+        self.stop_result = True  # what stop_daemon reports: True stopped, False still running, None not running
         self.daemon = None
         for name, fake in (
             ("restart_daemon", lambda: self.restarts.append(True) or True),
+            ("stop_daemon", lambda: self.stops.append(True) or self.stop_result),
             ("daemon_email", lambda: self.daemon),
             ("other_codex_hosts", lambda: []),
             ("fetch_usage", lambda auth: {"rate_limit": {}}),
@@ -181,6 +186,125 @@ class UseTest(CxTestCase):
         self.sign_in(ALICE)
         self.assertEqual(self.run_cx("save", "../escape")[0], 1)
         self.assertFalse(os.path.exists(self.path("escape.json")))
+
+
+class UseFromAppTest(CxTestCase):
+    """Run by the app, cx stops the daemon instead of restarting it (a daemon it starts would be
+    attributed to the app by macOS); codex starts it again by itself."""
+
+    def setUp(self):
+        super().setUp()
+        os.environ["AI_USAGE_APP"] = "1"
+        self.save("alice", ALICE)
+        self.save("bob", BOB)
+        self.sign_in(ALICE)
+
+    def test_switch_stops_the_daemon_instead_of_restarting_it(self):
+        code, out = self.run_cx("use", "bob")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.read_json(".codex", "auth.json"), BOB)
+        self.assertEqual((self.stops, self.restarts), ([True], []))
+        self.assertIn("Codex daemon stopped: the next codex session starts it on this account.", out)
+
+    def test_daemon_still_running_is_the_first_note(self):
+        self.stop_result = False
+        with mock.patch.object(self.cx, "other_codex_hosts", lambda: ["ChatGPT"]):
+            _, out = self.run_cx("use", "bob")
+        notes = [line for line in out.splitlines() if line.startswith("NOTE: ")]
+        self.assertEqual(notes, [
+            "NOTE: The Codex daemon is still running on the previous account: "
+            "run codex app-server daemon restart in a terminal.",
+            "NOTE: Restart ChatGPT to use this account there.",
+        ])
+        self.assertNotIn("daemon stopped", out)
+
+    def test_no_daemon_running_says_nothing_about_it(self):
+        self.stop_result = None
+        code, out = self.run_cx("use", "bob")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.stops, [True])
+        self.assertNotIn("daemon", out)
+        self.assertNotIn("NOTE", out)
+
+    def test_already_on_with_daemon_on_the_old_account_stops_it(self):
+        self.daemon = "bob@example.com"
+        code, out = self.run_cx("use", "alice")
+        self.assertEqual(code, 0, out)
+        self.assertEqual((self.stops, self.restarts), ([True], []))
+        self.assertIn("daemon was still on bob@example.com", out)
+
+    def test_other_values_keep_the_terminal_behavior(self):
+        for value in ("0", "", "true"):
+            os.environ["AI_USAGE_APP"] = value
+            self.stops.clear()
+            self.restarts.clear()
+            self.sign_in(ALICE)
+            self.daemon = "bob@example.com"
+            self.assertEqual(self.run_cx("use", "bob")[0], 0)
+            self.assertEqual((self.stops, self.restarts), ([], [True]), value)
+
+
+class DaemonCommandsTest(SafeTestCase):
+    """The codex commands behind restart_daemon / stop_daemon, with subprocess.run faked."""
+
+    RUNNING = '{"status":"running","backend":"pid"}'
+    NOT_RUNNING = '{"status":"notRunning"}'
+
+    def setUp(self):
+        super().setUp()
+        self.cx = load_tool("cx")
+        self.calls = []
+        self.versions = []  # successive outputs of `daemon version` (an Exception item is raised instead)
+        patcher = mock.patch.object(self.cx, "codex_bin", lambda: "/fake/codex")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(self.cx.subprocess, "run", self.fake_run)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def fake_run(self, args, **kwargs):
+        self.assertEqual(args[:3], ["/fake/codex", "app-server", "daemon"])
+        self.calls.append(args[3])
+        out = ""
+        if args[3] == "version":
+            out = self.versions.pop(0)
+            if isinstance(out, Exception):
+                raise out
+        return subprocess.CompletedProcess(args, 0, out, "")
+
+    def test_stop_then_verified(self):
+        self.versions = [self.RUNNING, self.NOT_RUNNING]
+        self.assertIs(self.cx.stop_daemon(), True)
+        self.assertEqual(self.calls, ["version", "stop", "version"])
+
+    def test_stop_that_leaves_it_running(self):
+        self.versions = [self.RUNNING, self.RUNNING]
+        self.assertIs(self.cx.stop_daemon(), False)
+        self.assertEqual(self.calls, ["version", "stop", "version"])
+
+    def test_stop_unverifiable_is_not_reported_as_stopped(self):
+        self.versions = [self.RUNNING, subprocess.TimeoutExpired("codex", 15)]
+        self.assertIs(self.cx.stop_daemon(), False)
+
+    def test_stop_when_not_running_does_nothing(self):
+        self.versions = [self.NOT_RUNNING]
+        self.assertIsNone(self.cx.stop_daemon())
+        self.assertEqual(self.calls, ["version"])
+
+    def test_restart_unchanged(self):
+        self.versions = [self.RUNNING]
+        self.assertIs(self.cx.restart_daemon(), True)
+        self.assertEqual(self.calls, ["version", "restart"])
+        self.calls.clear()
+        self.versions = [self.NOT_RUNNING]
+        self.assertIs(self.cx.restart_daemon(), False)
+        self.assertEqual(self.calls, ["version"])
+
+    def test_without_codex_nothing_runs(self):
+        with mock.patch.object(self.cx, "codex_bin", lambda: None):
+            self.assertIsNone(self.cx.stop_daemon())
+            self.assertIs(self.cx.restart_daemon(), False)
+        self.assertEqual(self.calls, [])
 
 
 class RemoveTest(CxTestCase):
