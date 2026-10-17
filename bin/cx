@@ -206,6 +206,17 @@ def expired(iso, now):
         return False
 
 
+def usable(entry):
+    """Whether a _usage.json entry has the shape cx writes (anything else is ignored, never trusted)."""
+    if not isinstance(entry, dict) or not isinstance(entry.get("at"), (int, float)):
+        return False
+    rl, resets = entry.get("rate_limit"), entry.get("resets")
+    if not isinstance(rl, dict) or not isinstance(resets, list):
+        return False
+    windows = (rl.get("primary_window"), rl.get("secondary_window"))
+    return all(w is None or isinstance(w, dict) for w in windows) and all(isinstance(r, str) for r in resets)
+
+
 def last_known(auths, usages):
     """Saves each account's usage when it was read, and stands in the last one read (with
     `_last_seen`) when it couldn't be: offline, HTTP error, expired token. A reading taken with
@@ -218,18 +229,21 @@ def last_known(auths, usages):
     except Exception:
         cache = {}
     before = json.dumps(cache, sort_keys=True)
-    cache = {n: e for n, e in cache.items() if n in auths and isinstance(e, dict)}
+    cache = {n: e for n, e in cache.items() if n in auths and usable(e)}
     now = time.time()
     for name, auth in auths.items():
         key, u = list(identity(auth)[2]), usages[name]
         if "error" not in u:
             cache[name] = {"key": key, "at": now, "rate_limit": u.get("rate_limit"), "resets": u.get("_resets", [])}
-        elif cache.get(name, {}).get("key") == key and "rate_limit" in cache[name]:
+        elif cache.get(name, {}).get("key") == key:
             last = cache[name]
-            usages[name] = {"error": u["error"], "rate_limit": last["rate_limit"], "_last_seen": last.get("at"),
-                            "_resets": [r for r in last.get("resets") or [] if not expired(r, now)]}
-    if json.dumps(cache, sort_keys=True) != before and os.path.isdir(STORE):
-        write_private(USAGE_CACHE, cache)
+            usages[name] = {"error": u["error"], "rate_limit": last["rate_limit"], "_last_seen": last["at"],
+                            "_resets": [r for r in last["resets"] if not expired(r, now)]}
+    if json.dumps(cache, sort_keys=True) != before:
+        try:
+            write_private(USAGE_CACHE, cache)
+        except OSError:
+            pass  # only a cache: the usage just read is still shown
     return usages
 
 

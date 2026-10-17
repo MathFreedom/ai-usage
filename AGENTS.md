@@ -100,7 +100,7 @@ Commands: `cx` (list + usage), `cx save <name>`, `cx add [name]`, `cx use <name>
 `cx rm <name>`, `cx json` (machine output consumed by the app).
 
 - Stored credentials: `~/.codex-accounts/<name>.json` (0600, dir 0700). Files starting with `_`
-  are backups and ignored. **Never commit or print tokens.**
+  (backups, `_usage.json`) are not accounts. **Never commit or print tokens.**
 - `cx add` logs in inside a throwaway `CODEX_HOME` (temp dir) so the active login is untouched;
   name defaults to the email local part.
 - Before any switch, `sync_active()` copies the live `~/.codex/auth.json` back to its stored

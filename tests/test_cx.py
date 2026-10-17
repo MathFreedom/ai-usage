@@ -409,12 +409,27 @@ class LastKnownUsageTest(CxTestCase):
         write.assert_not_called()
 
     def test_unreadable_file_is_replaced(self):
-        with open(self.path(".codex-accounts", "_usage.json"), "w") as f:
-            f.write("{not json")
-        self.assertEqual(self.accounts_json()["alice"]["windows"], [])
+        key = ["user-alice", "acct-alice"]
+        entry = {"key": key, "at": 1.0, "rate_limit": {}, "resets": []}
+        bad = ["{not json", "[]", "null", '{"alice": 5}'] + [json.dumps({"alice": dict(entry, **change)}) for change in (
+            {"rate_limit": "x"}, {"rate_limit": {"primary_window": "x"}}, {"resets": 5}, {"resets": [5, None]},
+            {"at": "yesterday"}, {"at": None})]
+        for content in bad:
+            with open(self.path(".codex-accounts", "_usage.json"), "w") as f:
+                f.write(content)
+            self.usage.pop("alice@example.com", None)
+            for argv in (["json"], []):
+                code, out = self.run_cx(*argv)
+                self.assertEqual(code, 0, (content, out))
+            self.assertEqual(self.accounts_json()["alice"]["windows"], [], content)
+            self.usage["alice@example.com"] = self.LIVE
+            self.accounts_json()
+            self.assertEqual(self.cache()["alice"]["rate_limit"], self.LIVE["rate_limit"], content)
+
+    def test_failed_write_still_shows_the_usage(self):
         self.usage["alice@example.com"] = self.LIVE
-        self.accounts_json()
-        self.assertEqual(self.cache()["alice"]["rate_limit"], self.LIVE["rate_limit"])
+        with mock.patch.object(self.cx, "write_private", side_effect=PermissionError("read-only")):
+            self.assertEqual(self.accounts_json()["alice"]["windows"], [self.WEEK])
 
     def test_list_shows_the_last_reading(self):
         self.usage["alice@example.com"] = self.LIVE
