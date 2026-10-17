@@ -30,7 +30,7 @@ struct Account: Identifiable {
     let limitReached: Bool
     let windows: [UsageWindow]
     let resets: [Date]  // expiry dates of available free "full reset" credits (Codex)
-    let lastSeen: Date?  // set when usage is the last known one (inactive Claude account, expired token)
+    let lastSeen: Date?  // set when usage is the last known one (inactive Claude account, expired token, usage API unreachable)
     var id: String { name }
     var key: String { "\(brand.resource):\(name)" }
     var worst: UsageWindow? { windows.max { $0.percent < $1.percent } }
@@ -127,6 +127,7 @@ func localized(_ message: String) -> String {
          "Une session Claude Code ouverte est revenue à $1. Fermez-la, puis basculez à nouveau."),
         (#"^token expired \(cx use refreshes it\)$"#, "jeton expiré (cx use le renouvelle)"),
         (#"^credentials missing$"#, "identifiants introuvables"),
+        (#"^usage unreachable$"#, "usage injoignable"),
         (#"^API key sign-in: no plan usage$"#, "connexion par clé API : pas d’usage d’abonnement"),
     ]
     for (pattern, template) in patterns {
@@ -230,7 +231,7 @@ func parseCodex(_ data: Data) -> [Account]? {
             limitReached: a["limit_reached"] as? Bool ?? false,
             windows: windows,
             resets: (a["resets"] as? [String] ?? []).compactMap(parseISODate),
-            lastSeen: nil)
+            lastSeen: number(a["last_seen"]).map { Date(timeIntervalSince1970: $0) })
     }
 }
 

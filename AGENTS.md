@@ -106,6 +106,12 @@ Commands: `cx` (list + usage), `cx save <name>`, `cx add [name]`, `cx use <name>
 - Before any switch, `sync_active()` copies the live `~/.codex/auth.json` back to its stored
   account (Codex refreshes/rotates tokens; stale copies would break).
 - Account identity = (`chatgpt_user_id` from id_token claims, `tokens.account_id`).
+- Last known usage: `~/.codex-accounts/_usage.json` (0600) keeps, per account, the last usage read
+  (`rate_limit`, free resets, time `at`) and the identity it was read with. When the usage call
+  fails (offline, HTTP error, expired token), `cx json` returns that reading with `last_seen` and
+  `cx` shows `(last seen …)`; expired resets are dropped, a reading from another login under the
+  same name is ignored, and removed accounts leave the file at the next listing. Network errors
+  read `usage unreachable`. The file is only rewritten when it changes.
 
 ### Critical finding: the daemon caches auth
 

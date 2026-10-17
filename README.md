@@ -59,6 +59,7 @@ need a restart.
 - **Credentials stay on your Mac.** Claude accounts are kept in the login Keychain
   (`ai-usage-claude:<name>`), Codex accounts in `~/.codex-accounts/` (mode 600). Inactive Claude
   accounts show their last known usage: their tokens are never refreshed in the background.
+  Codex accounts show their last known usage when it can't be read (offline, for example).
 - **Logos** are taken from the Claude and ChatGPT apps when installed; SF Symbols otherwise.
 
 [`AGENTS.md`](AGENTS.md) documents the internals; changes follow [`docs/PROCESS.md`](docs/PROCESS.md)
