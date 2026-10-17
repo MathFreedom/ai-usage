@@ -438,6 +438,15 @@ class LastKnownUsageTest(CxTestCase):
             self.assertEqual(self.accounts_json()["alice"]["windows"], [self.WEEK])
         self.assertEqual([f for f in os.listdir(self.path(".codex-accounts")) if f.startswith(".cx-")], [])
 
+    def test_failed_write_leaves_no_temp_and_raises(self):
+        target = self.path(".codex-accounts", "alice.json")
+        before = self.stored("alice")
+        for error in (OSError("disk full"), KeyboardInterrupt()):
+            with mock.patch.object(self.cx.os, "replace", side_effect=error), self.assertRaises(type(error)):
+                self.cx.write_private(target, {"x": 1})
+            self.assertEqual(self.stored("alice"), before)
+            self.assertEqual([f for f in os.listdir(self.path(".codex-accounts")) if f.startswith(".cx-")], [])
+
     def test_reading_without_limits_is_kept(self):
         self.usage["alice@example.com"] = {"rate_limit": None, "_resets": ["2099-01-01T00:00:00Z", 5]}
         self.accounts_json()
