@@ -410,10 +410,12 @@ class LastKnownUsageTest(CxTestCase):
 
     def test_unreadable_file_is_replaced(self):
         key = ["user-alice", "acct-alice"]
-        entry = {"key": key, "at": 1.0, "rate_limit": {}, "resets": []}
+        entry = {"key": key, "at": 1.0, "rate_limit": {"primary_window": self.WEEK}, "resets": []}
         bad = ["{not json", "[]", "null", '{"alice": 5}'] + [json.dumps({"alice": dict(entry, **change)}) for change in (
-            {"rate_limit": "x"}, {"rate_limit": {"primary_window": "x"}}, {"resets": 5}, {"resets": [5, None]},
-            {"at": "yesterday"}, {"at": None})]
+            {"rate_limit": "x"}, {"rate_limit": {"primary_window": "x"}},
+            {"rate_limit": {"primary_window": self.WEEK, "secondary_window": "x"}}, {"resets": 5},
+            {"resets": [5, None]}, {"at": "yesterday"}, {"at": None}, {"at": True}, {"at": float("nan")},
+            {"at": float("inf")}, {"at": 1e300}, {"at": -1})]
         for content in bad:
             with open(self.path(".codex-accounts", "_usage.json"), "w") as f:
                 f.write(content)
@@ -421,7 +423,8 @@ class LastKnownUsageTest(CxTestCase):
             for argv in (["json"], []):
                 code, out = self.run_cx(*argv)
                 self.assertEqual(code, 0, (content, out))
-            self.assertEqual(self.accounts_json()["alice"]["windows"], [], content)
+            ignored = self.accounts_json()["alice"]
+            self.assertEqual((ignored["windows"], ignored["last_seen"]), ([], None), content)
             self.usage["alice@example.com"] = self.LIVE
             self.accounts_json()
             self.assertEqual(self.cache()["alice"]["rate_limit"], self.LIVE["rate_limit"], content)
@@ -430,6 +433,19 @@ class LastKnownUsageTest(CxTestCase):
         self.usage["alice@example.com"] = self.LIVE
         with mock.patch.object(self.cx, "write_private", side_effect=PermissionError("read-only")):
             self.assertEqual(self.accounts_json()["alice"]["windows"], [self.WEEK])
+        os.mkdir(self.path(".codex-accounts", "_usage.json"))  # can't be replaced by a file
+        for _ in range(2):
+            self.assertEqual(self.accounts_json()["alice"]["windows"], [self.WEEK])
+        self.assertEqual([f for f in os.listdir(self.path(".codex-accounts")) if f.startswith(".cx-")], [])
+
+    def test_reading_without_limits_is_kept(self):
+        self.usage["alice@example.com"] = {"rate_limit": None, "_resets": ["2099-01-01T00:00:00Z", 5]}
+        self.accounts_json()
+        del self.usage["alice@example.com"]
+        last = self.accounts_json()["alice"]
+        self.assertIsNotNone(last["last_seen"])
+        self.assertEqual((last["windows"], last["resets"]), ([], ["2099-01-01T00:00:00Z"]))
+        self.assertIn("no limit", self.run_cx()[1])
 
     def test_list_shows_the_last_reading(self):
         self.usage["alice@example.com"] = self.LIVE

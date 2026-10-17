@@ -84,9 +84,13 @@ def load(path):
 
 def write_private(path, data):
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".cx-")
-    with os.fdopen(fd, "w") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
 
 
 def jwt_claims(token):
@@ -208,7 +212,8 @@ def expired(iso, now):
 
 def usable(entry):
     """Whether a _usage.json entry has the shape cx writes (anything else is ignored, never trusted)."""
-    if not isinstance(entry, dict) or not isinstance(entry.get("at"), (int, float)):
+    at = entry.get("at") if isinstance(entry, dict) else None
+    if isinstance(at, bool) or not isinstance(at, (int, float)) or not 0 <= at < 1e11:  # also rejects NaN
         return False
     rl, resets = entry.get("rate_limit"), entry.get("resets")
     if not isinstance(rl, dict) or not isinstance(resets, list):
@@ -234,7 +239,8 @@ def last_known(auths, usages):
     for name, auth in auths.items():
         key, u = list(identity(auth)[2]), usages[name]
         if "error" not in u:
-            cache[name] = {"key": key, "at": now, "rate_limit": u.get("rate_limit"), "resets": u.get("_resets", [])}
+            cache[name] = {"key": key, "at": now, "rate_limit": u.get("rate_limit") or {},
+                           "resets": [r for r in u.get("_resets") or [] if isinstance(r, str)]}
         elif cache.get(name, {}).get("key") == key:
             last = cache[name]
             usages[name] = {"error": u["error"], "rate_limit": last["rate_limit"], "_last_seen": last["at"],
