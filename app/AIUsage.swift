@@ -652,7 +652,8 @@ struct AccountRow: View {
                         Text("\(worst.percent)%").font(.system(size: 12, weight: .semibold)).monospacedDigit()
                     }
                 }
-                if let error = account.error {
+                // "Last seen" already says the usage couldn't be read; other errors (expired token, HTTP) stay.
+                if let error = account.error, !(account.lastSeen != nil && error == "usage unreachable") {
                     Text(localized(error)).font(.system(size: 10)).foregroundStyle(.secondary).padding(.leading, 22)
                 }
                 ForEach(account.windows) { w in
