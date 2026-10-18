@@ -111,7 +111,8 @@ Commands: `cx` (list + usage), `cx save <name>`, `cx add [name]`, `cx use <name>
   fails (offline, HTTP error, expired token), `cx json` returns that reading with `last_seen` and
   `cx` shows `(last seen …)`; expired resets are dropped, a reading from another login under the
   same name is ignored, and removed accounts leave the file at the next listing. Network errors
-  read `usage unreachable` (the panel shows only "Last seen" then). The file is only rewritten when it changes.
+  read `usage unreachable`; when an earlier reading exists, the panel shows its "Last seen" line
+  instead of that error. The file is only rewritten when it changes.
 
 ### Critical finding: the daemon caches auth
 
