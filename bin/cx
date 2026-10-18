@@ -15,6 +15,7 @@ auth.json, restarts the daemon and asks it which account it loaded. The
 ChatGPT desktop app and IDE extensions run their own server: restart them.
 """
 import base64
+import calendar
 import contextlib
 import fcntl
 import json
@@ -34,6 +35,7 @@ from concurrent.futures import ThreadPoolExecutor
 CODEX_HOME = os.environ.get("CODEX_HOME", os.path.expanduser("~/.codex"))
 AUTH = os.path.join(CODEX_HOME, "auth.json")
 STORE = os.path.expanduser("~/.codex-accounts")
+USAGE_CACHE = os.path.join(STORE, "_usage.json")  # last usage read per account, shown when it can't be read
 USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 RESETS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"  # read-only (never /consume)
 USER_AGENT = "ai-usage-cx/1.0"
@@ -82,9 +84,13 @@ def load(path):
 
 def write_private(path, data):
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".cx-")
-    with os.fdopen(fd, "w") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
 
 
 def jwt_claims(token):
@@ -162,8 +168,8 @@ def fetch_usage(auth):
             usage = json.load(r)
     except urllib.error.HTTPError as e:
         return {"error": f"HTTP {e.code}"}
-    except Exception as e:
-        return {"error": str(e)[:60]}
+    except Exception:
+        return {"error": "usage unreachable"}
     # Free "full reset" credits: optional, ignored if the endpoint fails
     try:
         with urllib.request.urlopen(urllib.request.Request(RESETS_URL, headers=headers), timeout=10) as r:
@@ -194,7 +200,57 @@ def all_usages():
     auths = {n: load(p) for n, p in accounts().items()}
     with ThreadPoolExecutor(max_workers=8) as pool:
         usages = dict(zip(auths, pool.map(fetch_usage, auths.values())))
-    return current, auths, usages
+    return current, auths, last_known(auths, usages)
+
+
+def expired(iso, now):
+    try:
+        return calendar.timegm(time.strptime(re.sub(r"\.\d+", "", iso)[:19], "%Y-%m-%dT%H:%M:%S")) <= now
+    except Exception:
+        return False
+
+
+def usable(entry):
+    """Whether a _usage.json entry has the shape cx writes (anything else is ignored, never trusted)."""
+    at = entry.get("at") if isinstance(entry, dict) else None
+    if isinstance(at, bool) or not isinstance(at, (int, float)) or not 0 <= at < 1e11:  # also rejects NaN
+        return False
+    rl, resets = entry.get("rate_limit"), entry.get("resets")
+    if not isinstance(rl, dict) or not isinstance(resets, list):
+        return False
+    windows = (rl.get("primary_window"), rl.get("secondary_window"))
+    return all(w is None or isinstance(w, dict) for w in windows) and all(isinstance(r, str) for r in resets)
+
+
+def last_known(auths, usages):
+    """Saves each account's usage when it was read, and stands in the last one read (with
+    `_last_seen`) when it couldn't be: offline, HTTP error, expired token. A reading taken with
+    another login under the same name is ignored; removed accounts are dropped."""
+    try:
+        with open(USAGE_CACHE) as f:
+            cache = json.load(f)
+        if not isinstance(cache, dict):
+            cache = {}
+    except Exception:
+        cache = {}
+    before = json.dumps(cache, sort_keys=True)
+    cache = {n: e for n, e in cache.items() if n in auths and usable(e)}
+    now = time.time()
+    for name, auth in auths.items():
+        key, u = list(identity(auth)[2]), usages[name]
+        if "error" not in u:
+            cache[name] = {"key": key, "at": now, "rate_limit": u.get("rate_limit") or {},
+                           "resets": [r for r in u.get("_resets") or [] if isinstance(r, str)]}
+        elif cache.get(name, {}).get("key") == key:
+            last = cache[name]
+            usages[name] = {"error": u["error"], "rate_limit": last["rate_limit"], "_last_seen": last["at"],
+                            "_resets": [r for r in last["resets"] if not expired(r, now)]}
+    if json.dumps(cache, sort_keys=True) != before:
+        try:
+            write_private(USAGE_CACHE, cache)
+        except OSError:
+            pass  # only a cache: the usage just read is still shown
+    return usages
 
 
 def cmd_json():
@@ -209,7 +265,7 @@ def cmd_json():
             "name": name, "email": email, "plan": plan, "active": name == current,
             "error": u.get("error"), "limit_reached": bool(rl.get("limit_reached")),
             "windows": [w for w in (rl.get("primary_window"), rl.get("secondary_window")) if w],
-            "resets": u.get("_resets", []),
+            "resets": u.get("_resets", []), "last_seen": u.get("_last_seen"),
         })
     print(json.dumps(out))
 
@@ -226,7 +282,7 @@ def cmd_list():
         email, plan, _ = identity(auth)
         mark = f"{GREEN}●{RESET}" if name == current else " "
         u = usages[name]
-        if "error" in u:
+        if "error" in u and "rate_limit" not in u:
             usage = f"{DIM}{u['error']}{RESET}"
         else:
             rl = u.get("rate_limit") or {}
@@ -236,6 +292,9 @@ def cmd_list():
                 usage += f" {RED}(limit reached){RESET}"
             if u.get("_resets"):
                 usage += f"  {DIM}↺ {len(u['_resets'])} free reset(s), expires {u['_resets'][0][:10]}{RESET}"
+            if u.get("_last_seen"):
+                seen = time.strftime("%d/%m %H:%M", time.localtime(u["_last_seen"]))
+                usage += f"  {DIM}(last seen {seen}, {u['error']}){RESET}"
         print(f"{mark} {BOLD}{name:<{width}}{RESET}  {DIM}{email} · {plan}{RESET}  {usage}")
     if current is None and os.path.exists(AUTH):
         email = identity(load(AUTH))[0]

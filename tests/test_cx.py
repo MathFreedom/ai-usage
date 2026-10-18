@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import unittest
+import urllib.error
 from unittest import mock
 
 from helpers import SafeTestCase, codex_auth, load_tool
@@ -328,6 +329,156 @@ class DaemonCommandsTest(SafeTestCase):
             self.assertIsNone(self.cx.stop_daemon())
             self.assertIs(self.cx.restart_daemon(), False)
         self.assertEqual(self.calls, [])
+
+
+class LastKnownUsageTest(CxTestCase):
+    """_usage.json: the last usage read per account, returned when it can't be read."""
+
+    WEEK = {"used_percent": 42, "limit_window_seconds": 604800, "reset_at": 2000000000}
+    LIVE = {"rate_limit": {"limit_reached": True, "primary_window": WEEK},
+            "_resets": ["2000-01-01T00:00:00.123Z", "2099-01-01T00:00:00.5Z"]}
+
+    def setUp(self):
+        super().setUp()
+        self.usage = {}  # email -> fetch_usage response; missing = unreachable
+        patcher = mock.patch.object(self.cx, "fetch_usage", lambda auth: self.usage.get(
+            self.cx.identity(auth)[0], {"error": "usage unreachable"}))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.save("alice", ALICE)
+        self.sign_in(ALICE)
+
+    def cache(self):
+        return self.read_json(".codex-accounts", "_usage.json")
+
+    def accounts_json(self):
+        code, out = self.run_cx("json")
+        self.assertEqual(code, 0, out)
+        return {a["name"]: a for a in json.loads(out)}
+
+    def test_last_reading_returned_when_unreachable(self):
+        self.usage["alice@example.com"] = self.LIVE
+        live = self.accounts_json()["alice"]
+        self.assertIsNone(live["last_seen"])
+        self.assertEqual(os.stat(self.path(".codex-accounts", "_usage.json")).st_mode & 0o777, 0o600)
+        read_at = self.cache()["alice"]["at"]
+        del self.usage["alice@example.com"]
+        last = self.accounts_json()["alice"]
+        self.assertEqual(last["error"], "usage unreachable")
+        self.assertEqual(last["windows"], [self.WEEK])
+        self.assertTrue(last["limit_reached"])
+        self.assertEqual(last["last_seen"], read_at)
+        self.assertEqual(last["resets"], ["2099-01-01T00:00:00.5Z"])  # the expired one is dropped
+
+    def test_any_failure_falls_back(self):
+        self.usage["alice@example.com"] = self.LIVE
+        self.accounts_json()
+        for error in ("HTTP 401", "token expired (cx use refreshes it)"):
+            self.usage["alice@example.com"] = {"error": error}
+            last = self.accounts_json()["alice"]
+            self.assertEqual((last["error"], last["windows"]), (error, [self.WEEK]))
+
+    def test_reading_of_another_login_is_ignored(self):
+        self.usage["alice@example.com"] = self.LIVE
+        self.accounts_json()
+        other = codex_auth("alice@example.com", "user-alice", "acct-team")  # same name, other workspace
+        self.save("alice", other)
+        self.sign_in(other)
+        del self.usage["alice@example.com"]
+        last = self.accounts_json()["alice"]
+        self.assertEqual((last["windows"], last["resets"], last["last_seen"]), ([], [], None))
+
+    def test_removed_account_leaves_the_file(self):
+        self.save("bob", BOB)
+        self.usage = {"alice@example.com": self.LIVE, "bob@example.com": self.LIVE}
+        self.accounts_json()
+        self.assertEqual(sorted(self.cache()), ["alice", "bob"])
+        self.assertEqual(self.run_cx("rm", "bob")[0], 0)
+        self.accounts_json()
+        self.assertEqual(sorted(self.cache()), ["alice"])
+
+    def test_not_rewritten_while_unreachable(self):
+        self.assertEqual(self.accounts_json()["alice"]["windows"], [])  # nothing kept yet: as before
+        self.assertFalse(os.path.exists(self.path(".codex-accounts", "_usage.json")))
+        self.usage["alice@example.com"] = self.LIVE
+        self.accounts_json()
+        del self.usage["alice@example.com"]
+        with mock.patch.object(self.cx, "write_private") as write:
+            self.accounts_json()
+            self.run_cx()
+        write.assert_not_called()
+
+    def test_unreadable_file_is_replaced(self):
+        key = ["user-alice", "acct-alice"]
+        entry = {"key": key, "at": 1.0, "rate_limit": {"primary_window": self.WEEK}, "resets": []}
+        bad = ["{not json", "[]", "null", '{"alice": 5}'] + [json.dumps({"alice": dict(entry, **change)}) for change in (
+            {"rate_limit": "x"}, {"rate_limit": {"primary_window": "x"}},
+            {"rate_limit": {"primary_window": self.WEEK, "secondary_window": "x"}}, {"resets": 5},
+            {"resets": [5, None]}, {"at": "yesterday"}, {"at": None}, {"at": True}, {"at": float("nan")},
+            {"at": float("inf")}, {"at": 1e300}, {"at": -1})]
+        for content in bad:
+            with open(self.path(".codex-accounts", "_usage.json"), "w") as f:
+                f.write(content)
+            self.usage.pop("alice@example.com", None)
+            for argv in (["json"], []):
+                code, out = self.run_cx(*argv)
+                self.assertEqual(code, 0, (content, out))
+            ignored = self.accounts_json()["alice"]
+            self.assertEqual((ignored["windows"], ignored["last_seen"]), ([], None), content)
+            self.usage["alice@example.com"] = self.LIVE
+            self.accounts_json()
+            self.assertEqual(self.cache()["alice"]["rate_limit"], self.LIVE["rate_limit"], content)
+
+    def test_failed_write_still_shows_the_usage(self):
+        self.usage["alice@example.com"] = self.LIVE
+        with mock.patch.object(self.cx, "write_private", side_effect=PermissionError("read-only")):
+            self.assertEqual(self.accounts_json()["alice"]["windows"], [self.WEEK])
+        os.mkdir(self.path(".codex-accounts", "_usage.json"))  # can't be replaced by a file
+        for _ in range(2):
+            self.assertEqual(self.accounts_json()["alice"]["windows"], [self.WEEK])
+        self.assertEqual([f for f in os.listdir(self.path(".codex-accounts")) if f.startswith(".cx-")], [])
+
+    def test_failed_write_leaves_no_temp_and_raises(self):
+        target = self.path(".codex-accounts", "alice.json")
+        before = self.stored("alice")
+        for error in (OSError("disk full"), KeyboardInterrupt()):
+            with mock.patch.object(self.cx.os, "replace", side_effect=error), self.assertRaises(type(error)):
+                self.cx.write_private(target, {"x": 1})
+            self.assertEqual(self.stored("alice"), before)
+            self.assertEqual([f for f in os.listdir(self.path(".codex-accounts")) if f.startswith(".cx-")], [])
+
+    def test_reading_without_limits_is_kept(self):
+        self.usage["alice@example.com"] = {"rate_limit": None, "_resets": ["2099-01-01T00:00:00Z", 5]}
+        self.accounts_json()
+        del self.usage["alice@example.com"]
+        last = self.accounts_json()["alice"]
+        self.assertIsNotNone(last["last_seen"])
+        self.assertEqual((last["windows"], last["resets"]), ([], ["2099-01-01T00:00:00Z"]))
+        self.assertIn("no limit", self.run_cx()[1])
+
+    def test_list_shows_the_last_reading(self):
+        self.usage["alice@example.com"] = self.LIVE
+        self.accounts_json()
+        del self.usage["alice@example.com"]
+        code, out = self.run_cx()
+        self.assertEqual(code, 0)
+        self.assertIn("42%", out)
+        self.assertIn("(last seen ", out)
+        self.assertIn("usage unreachable", out)
+        self.assertIn("1 free reset(s)", out)
+
+
+class FetchUsageTest(SafeTestCase):
+    def setUp(self):
+        super().setUp()
+        self.cx = load_tool("cx")
+
+    def test_errors(self):
+        http = urllib.error.HTTPError("https://chatgpt.com", 429, "Too Many Requests", {}, None)
+        for raised, error in ((urllib.error.URLError("[Errno 61] Connection refused"), "usage unreachable"),
+                              (TimeoutError("timed out"), "usage unreachable"), (http, "HTTP 429")):
+            with mock.patch.object(self.cx.urllib.request, "urlopen", side_effect=raised):
+                self.assertEqual(self.cx.fetch_usage(ALICE), {"error": error})
 
 
 class RemoveTest(CxTestCase):
