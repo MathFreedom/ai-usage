@@ -560,7 +560,7 @@ class FetchUsageTest(SafeTestCase):
 
     def test_deeply_nested_window(self):
         for bottom, kept in (("1", True), ("NaN", False)):
-            nested = "[" * 600 + bottom + "]" * 600  # past a two-frames-per-level recursion, within json.load's
+            nested = "[" * 600 + bottom + "]" * 600  # past a two-frames-per-level recursion, within json.load's limit (~960)
             body = '{"rate_limit": {"primary_window": {"used_percent": 1, "extra": %s}}}' % nested
             window = self.fetch(body)["rate_limit"]["primary_window"]
             self.assertEqual(window is not None, kept, bottom)
