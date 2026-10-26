@@ -450,11 +450,13 @@ class LastKnownUsageTest(CxTestCase):
     def test_deeply_nested_window_in_the_file(self):
         entry = {"key": ["user-alice", "acct-alice"], "at": 1.0, "resets": [], "rate_limit": {}}
         with open(self.path(".codex-accounts", "_usage.json"), "w") as f:
-            f.write(json.dumps({"alice": entry})[:-3] + '{"primary_window": {"used_percent": 1, "extra": %s}}}}'
-                    % ("[" * 600 + "NaN" + "]" * 600))
+            f.write(json.dumps({"alice": entry})[:-4] + '{"primary_window": {"used_percent": 1, "extra": %s}, '
+                    '"secondary_window": %s}}}' % ("[" * 900 + "NaN" + "]" * 900, json.dumps(self.WEEK)))
+        json.load(open(self.path(".codex-accounts", "_usage.json")))  # the file itself is valid JSON
         code, out = self.run_cx("json")
         self.assertEqual(code, 0, out[-300:])
-        self.assertEqual(json.loads(out, parse_constant=self.fail)[0]["windows"], [])
+        alice = json.loads(out, parse_constant=self.fail)[0]
+        self.assertEqual((alice["windows"], alice["last_seen"]), ([self.WEEK], 1.0))
         self.assertEqual(self.run_cx()[0], 0)
 
     def test_list_with_a_null_reset_time(self):
@@ -545,9 +547,19 @@ class FetchUsageTest(SafeTestCase):
         nulls = dict(self.WEEK, limit_window_seconds=None, reset_at=None)
         self.assertEqual(self.fetch(json.dumps({"rate_limit": {"primary_window": nulls}}))["rate_limit"]["primary_window"], nulls)
 
+    def test_sane_walks_any_depth(self):
+        for bottom, ok in ((1, True), (float("nan"), False)):
+            v = bottom
+            for _ in range(100000):  # far deeper than any recursion would go
+                v = [{"a": v}]
+            self.assertIs(self.cx.sane(v), ok)
+        for v, ok in (([1, float("nan")], False), ([float("nan"), 1], False), ({"a": float("nan"), "b": 1}, False),
+                      ({"a": 1, "b": float("inf")}, False), ([1, {"a": [2, True, "x", None]}], True)):
+            self.assertIs(self.cx.sane(v), ok, v)
+
     def test_deeply_nested_window(self):
         for bottom, kept in (("1", True), ("NaN", False)):
-            nested = "[" * 600 + bottom + "]" * 600  # deeper than Python's recursion limit
+            nested = "[" * 900 + bottom + "]" * 900  # as deep as json.load goes
             body = '{"rate_limit": {"primary_window": {"used_percent": 1, "extra": %s}}}' % nested
             window = self.fetch(body)["rate_limit"]["primary_window"]
             self.assertEqual(window is not None, kept, bottom)
@@ -610,6 +622,7 @@ class LockTest(CxTestCase):
         self.addCleanup(os.chmod, self.path(".codex-accounts"), 0o700)
 
     def test_commands_hold_the_lock(self):
+        self.addCleanup(os.umask, os.umask(0))  # the mode below is cx's own, not the umask's
         for argv in (["json"], [], ["save", "alice"]):
             self.flocks.clear()
             self.assertEqual(self.run_cx(*argv)[0], 0, argv)
