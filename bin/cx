@@ -173,12 +173,18 @@ def finite(x):
 
 
 def sane(v):
-    """No number anywhere in v that finite() rejects (NaN would make cx json invalid JSON)."""
-    if isinstance(v, dict):
-        return all(sane(x) for x in v.values())
-    if isinstance(v, list):
-        return all(sane(x) for x in v)
-    return finite(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else True
+    """No number anywhere in v that finite() rejects (NaN would make cx json invalid JSON).
+    A loop, not recursion: any nesting json.load accepts is walked without a RecursionError."""
+    todo = [v]
+    while todo:
+        x = todo.pop()
+        if isinstance(x, dict):
+            todo.extend(x.values())
+        elif isinstance(x, list):
+            todo.extend(x)
+        elif isinstance(x, (int, float)) and not isinstance(x, bool) and not finite(x):
+            return False
+    return True
 
 
 def clean_rate_limit(rl):

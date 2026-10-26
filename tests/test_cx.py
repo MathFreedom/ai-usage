@@ -1,5 +1,6 @@
 """bin/cx — Codex accounts. Runs in a temp HOME; network, processes and sockets are blocked."""
 import contextlib
+import errno
 import io
 import json
 import os
@@ -446,6 +447,16 @@ class LastKnownUsageTest(CxTestCase):
                 json.dump({"alice": entry}, f)
             self.assertEqual(json.loads(self.run_cx("json")[1], parse_constant=self.fail)[0]["windows"], [self.WEEK])
 
+    def test_deeply_nested_window_in_the_file(self):
+        entry = {"key": ["user-alice", "acct-alice"], "at": 1.0, "resets": [], "rate_limit": {}}
+        with open(self.path(".codex-accounts", "_usage.json"), "w") as f:
+            f.write(json.dumps({"alice": entry})[:-3] + '{"primary_window": {"used_percent": 1, "extra": %s}}}}'
+                    % ("[" * 600 + "NaN" + "]" * 600))
+        code, out = self.run_cx("json")
+        self.assertEqual(code, 0, out[-300:])
+        self.assertEqual(json.loads(out, parse_constant=self.fail)[0]["windows"], [])
+        self.assertEqual(self.run_cx()[0], 0)
+
     def test_list_with_a_null_reset_time(self):
         self.usage["alice@example.com"] = {"rate_limit": {"primary_window": dict(self.WEEK, reset_at=None)}}
         code, out = self.run_cx()
@@ -529,10 +540,17 @@ class FetchUsageTest(SafeTestCase):
         for extra in ("NaN", "1" + "0" * 400, "1000000000000", '{"x": NaN}', "[Infinity]", '[{"x": %s}]' % ("1" + "0" * 400)):
             body = '{"rate_limit": {"primary_window": {"used_percent": 1, "reset_after_seconds": %s}}}' % extra
             self.assertIsNone(self.fetch(body)["rate_limit"]["primary_window"], extra)  # any number, nested too
-        kept = dict(self.WEEK, reset_after_seconds=60, note="x")
+        kept = dict(self.WEEK, reset_after_seconds=60, note="x", flag=True, extra={"b": [False]})
         self.assertEqual(self.fetch(json.dumps({"rate_limit": {"primary_window": kept}}))["rate_limit"]["primary_window"], kept)
         nulls = dict(self.WEEK, limit_window_seconds=None, reset_at=None)
         self.assertEqual(self.fetch(json.dumps({"rate_limit": {"primary_window": nulls}}))["rate_limit"]["primary_window"], nulls)
+
+    def test_deeply_nested_window(self):
+        for bottom, kept in (("1", True), ("NaN", False)):
+            nested = "[" * 600 + bottom + "]" * 600  # deeper than Python's recursion limit
+            body = '{"rate_limit": {"primary_window": {"used_percent": 1, "extra": %s}}}' % nested
+            window = self.fetch(body)["rate_limit"]["primary_window"]
+            self.assertEqual(window is not None, kept, bottom)
 
     def test_rate_limit_not_an_object(self):
         for rl in ('"x"', "5", "[]", "null", "true"):
@@ -596,6 +614,19 @@ class LockTest(CxTestCase):
             self.flocks.clear()
             self.assertEqual(self.run_cx(*argv)[0], 0, argv)
             self.assertEqual(self.flocks, [self.cx.fcntl.LOCK_EX], argv)
+        self.assertEqual(os.stat(self.path(".codex-accounts", ".lock")).st_mode & 0o777, 0o600)
+
+    def test_lock_that_cant_be_created_in_a_writable_store(self):
+        real_open = os.open
+
+        def full_disk(path, *args):
+            if path.endswith(".lock"):
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real_open(path, *args)
+
+        with mock.patch.object(self.cx.os, "open", full_disk), self.assertRaises(OSError):
+            self.run_cx("json")
+        self.assertEqual(self.flocks, [])
 
     def test_read_only_lock_file_still_locks(self):
         lock = self.path(".codex-accounts", ".lock")
@@ -613,6 +644,13 @@ class LockTest(CxTestCase):
             self.run_cx("json")
         self.read_only_store()
         with self.assertRaises(PermissionError):  # nor when the lock exists in a read-only one
+            self.run_cx("json")
+        self.assertEqual(self.flocks, [])
+
+    def test_dangling_lock_link_in_a_read_only_store(self):
+        os.symlink("missing", self.path(".codex-accounts", ".lock"))  # target can't be created there
+        self.read_only_store()
+        with self.assertRaises(OSError):
             self.run_cx("json")
         self.assertEqual(self.flocks, [])
 
