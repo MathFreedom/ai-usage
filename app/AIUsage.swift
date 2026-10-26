@@ -315,7 +315,7 @@ func fetchClaudeLive(token: String) async -> [UsageWindow]? {
 }
 
 /// Last resort: the last snapshot saved by the Claude Code status line, read only when no saved
-/// account is active, the usage API doesn't answer and nothing was read before.
+/// account is active, the usage API can't be read (no token, or no answer) and nothing was read before.
 func loadClaude() -> (windows: [UsageWindow], updated: Date?) {
     guard let data = FileManager.default.contents(atPath: claudeCachePath),
           let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
@@ -413,7 +413,11 @@ final class UsageModel: ObservableObject {
     /// False when a token was found but the API didn't answer (429, offline): nothing learned.
     private func refreshClaudeFromKeychain() async -> Bool {
         if auth?.valid != true { auth = await Task.detached { claudeAuth() }.value }
-        guard let token = auth?.token else { return true }
+        guard let token = auth?.token else {
+            // No token (signed out, or expired until Claude Code runs again): the status line's snapshot, if any.
+            if claude.isEmpty { (claude, claudeUpdated) = loadClaude() }
+            return true
+        }
         if let live = await fetchClaudeLive(token: token) {
             claude = live
             claudeUpdated = Date()

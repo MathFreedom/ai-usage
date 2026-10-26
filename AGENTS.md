@@ -79,7 +79,7 @@ Edits in the repo are live for `cx`, `ccx` and the status line (symlinks). The a
 | Data | Endpoint / file | Auth |
 |---|---|---|
 | Claude limits (5h, weekly, per-model weekly e.g. Fable) | `GET https://api.anthropic.com/api/oauth/usage` → `limits[]` (`kind`: `session`, `weekly_all`, `weekly_scoped` + `scope.model.display_name`) | Claude Code's OAuth token from Keychain item `Claude Code-credentials` (`claudeAiOauth.accessToken`, check `expiresAt` ms), header `anthropic-beta: oauth-2025-04-20` |
-| Claude fallback | `~/.claude/usage-cache.json` written by the status line, read only when no `ccx` account is active, the usage API doesn't answer and the app has nothing yet | — |
+| Claude fallback | `~/.claude/usage-cache.json` written by the status line, read only when no `ccx` account is active, the usage API can't be read (no token, or no answer) and the app has nothing yet | — |
 | Claude account identity | `GET https://api.anthropic.com/api/oauth/profile` → `account.{uuid,email}` | same OAuth token |
 | Codex usage per account | `GET https://chatgpt.com/backend-api/wham/usage` (`rate_limit.primary_window/secondary_window`: `used_percent`, `limit_window_seconds`, `reset_at`) | `Authorization: Bearer <access_token>`, `ChatGPT-Account-Id: <account_id>` from each stored `auth.json` |
 | Codex free "Full reset" credits | `GET https://chatgpt.com/backend-api/wham/rate-limit-reset-credits` (`credits[]` with `status`, `expires_at`) | same |
