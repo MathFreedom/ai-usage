@@ -94,6 +94,11 @@ does not call it itself when ccx has accounts.
 
 Plans seen: Codex Pro has only a weekly window (no 5h); `prolite` = "Pro Lite"; Claude `max`.
 
+Usage responses are checked before use (#19): a response that is not a JSON object counts as a
+failure (`usage unreachable` in `cx`, the last known usage in `ccx`), and a window whose numbers are
+not finite numbers (text, NaN, infinity), or that is not an object, is dropped. One malformed
+account never stops the others from being listed, and `cx json`/`ccx json` never print NaN.
+
 ## `cx` — Codex accounts
 
 Commands: `cx` (list + usage), `cx save <name>`, `cx add [name]`, `cx use <name>` / `cx <name>`,
@@ -106,6 +111,8 @@ Commands: `cx` (list + usage), `cx save <name>`, `cx add [name]`, `cx use <name>
 - Before any switch, `sync_active()` copies the live `~/.codex/auth.json` back to its stored
   account (Codex refreshes/rotates tokens; stale copies would break).
 - Account identity = (`chatgpt_user_id` from id_token claims, `tokens.account_id`).
+- `locked()` serializes commands on `~/.codex-accounts/.lock`; a store where the lock can't be
+  created (read-only) runs unlocked, so listing still works there.
 - Last known usage: `~/.codex-accounts/_usage.json` (0600) keeps, per account, the last usage read
   (`rate_limit`, free resets, time `at`) and the identity it was read with. When the usage call
   fails (offline, HTTP error, expired token), `cx json` returns that reading with `last_seen` and

@@ -429,6 +429,18 @@ class LastKnownUsageTest(CxTestCase):
             self.accounts_json()
             self.assertEqual(self.cache()["alice"]["rate_limit"], self.LIVE["rate_limit"], content)
 
+    def test_malformed_window_in_the_file_is_dropped(self):
+        bad = dict(self.WEEK, used_percent=float("nan"))
+        entry = {"key": ["user-alice", "acct-alice"], "at": 1.0, "resets": [],
+                 "rate_limit": {"primary_window": bad, "secondary_window": self.WEEK}}
+        with open(self.path(".codex-accounts", "_usage.json"), "w") as f:
+            json.dump({"alice": entry}, f)  # NaN written as JSON's NaN, as a hand edit could
+        code, out = self.run_cx("json")
+        self.assertEqual(code, 0, out)
+        alice = json.loads(out, parse_constant=self.fail)[0]  # no NaN printed
+        self.assertEqual((alice["windows"], alice["last_seen"]), ([self.WEEK], 1.0))
+        self.assertEqual(self.run_cx()[0], 0)
+
     def test_failed_write_still_shows_the_usage(self):
         self.usage["alice@example.com"] = self.LIVE
         with mock.patch.object(self.cx, "write_private", side_effect=PermissionError("read-only")):
@@ -479,6 +491,83 @@ class FetchUsageTest(SafeTestCase):
                               (TimeoutError("timed out"), "usage unreachable"), (http, "HTTP 429")):
             with mock.patch.object(self.cx.urllib.request, "urlopen", side_effect=raised):
                 self.assertEqual(self.cx.fetch_usage(ALICE), {"error": error})
+
+    WEEK = {"used_percent": 42, "limit_window_seconds": 604800, "reset_at": 2000000000}
+
+    def fetch(self, usage, credits='{"credits": []}'):
+        """fetch_usage with the usage endpoint answering `usage` (a JSON text, NaN allowed)."""
+        bodies = {self.cx.USAGE_URL: usage, self.cx.RESETS_URL: credits}
+        urlopen = lambda req, timeout=None: io.BytesIO(bodies[req.full_url].encode())
+        with mock.patch.object(self.cx.urllib.request, "urlopen", urlopen):
+            return self.cx.fetch_usage(ALICE)
+
+    def test_non_object_response_is_unreachable(self):
+        for body in ("[]", "null", "5", '"x"'):
+            self.assertEqual(self.fetch(body), {"error": "usage unreachable"}, body)
+
+    def test_malformed_window_is_dropped(self):
+        for field in ("used_percent", "limit_window_seconds", "reset_at"):
+            for bad in ('"x"', "NaN", "Infinity", "-Infinity", "true", "[]"):
+                fields = dict({k: json.dumps(v) for k, v in self.WEEK.items()}, **{field: bad})
+                window = "{" + ", ".join(f'"{k}": {v}' for k, v in fields.items()) + "}"
+                body = '{"rate_limit": {"primary_window": %s, "secondary_window": %s}}' % (window, json.dumps(self.WEEK))
+                rl = self.fetch(body)["rate_limit"]
+                self.assertEqual((rl["primary_window"], rl["secondary_window"]), (None, self.WEEK), (field, bad))
+        for window in ('"x"', "[]", "5"):
+            self.assertIsNone(self.fetch('{"rate_limit": {"primary_window": %s}}' % window)["rate_limit"]["primary_window"])
+        nulls = dict(self.WEEK, limit_window_seconds=None, reset_at=None)
+        self.assertEqual(self.fetch(json.dumps({"rate_limit": {"primary_window": nulls}}))["rate_limit"]["primary_window"], nulls)
+
+    def test_rate_limit_not_an_object(self):
+        self.assertEqual(self.fetch('{"rate_limit": "x"}')["rate_limit"], {"primary_window": None, "secondary_window": None})
+        self.assertNotIn("rate_limit", self.fetch('{"plan_type": "free"}'))  # no limits: left as the API says
+
+    def test_malformed_credits_are_ignored(self):
+        credit = {"status": "available", "is_supported_by_plan": True, "expires_at": "2099-01-01T00:00:00Z"}
+        credits = json.dumps({"credits": [5, "x", dict(credit, expires_at=5), dict(credit, expires_at=None), credit]})
+        self.assertEqual(self.fetch(json.dumps({"rate_limit": {}}), credits)["_resets"], ["2099-01-01T00:00:00Z"])
+
+
+class MalformedAccountTest(SafeTestCase):
+    """One account's malformed usage leaves the others listed."""
+
+    def test_other_accounts_still_listed(self):
+        cx = load_tool("cx")
+        bob = codex_auth("bob@example.com", "user-bob", "acct-bob")
+        for name, auth in (("alice", ALICE), ("bob", bob)):
+            self.write_json(auth, ".codex-accounts", f"{name}.json")
+        self.write_json(ALICE, ".codex", "auth.json")
+        week = {"used_percent": 42, "limit_window_seconds": 604800, "reset_at": 2000000000}
+
+        def urlopen(req, timeout=None):
+            if req.full_url == cx.RESETS_URL:
+                return io.BytesIO(b'{"credits": []}')
+            if req.get_header("Chatgpt-account-id") == "acct-alice":
+                return io.BytesIO(b'{"rate_limit": {"primary_window": {"used_percent": NaN}}}')
+            return io.BytesIO(json.dumps({"rate_limit": {"primary_window": week}}).encode())
+
+        with mock.patch.object(cx.urllib.request, "urlopen", urlopen):
+            for argv in (["json"], []):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    cx.main(argv)
+                if argv:
+                    rows = {a["name"]: a for a in json.loads(out.getvalue(), parse_constant=self.fail)}
+                    self.assertEqual((rows["alice"]["windows"], rows["bob"]["windows"]), ([], [week]))
+                else:
+                    self.assertIn("42%", out.getvalue())
+
+
+class ReadOnlyStoreTest(CxTestCase):
+    def test_listing_works_without_a_lock(self):
+        self.save("alice", ALICE)
+        self.sign_in(ALICE)
+        os.chmod(self.path(".codex-accounts"), 0o500)
+        self.addCleanup(os.chmod, self.path(".codex-accounts"), 0o700)
+        for argv in (["json"], []):
+            code, out = self.run_cx(*argv)
+            self.assertEqual(code, 0, out)
+        self.assertFalse(os.path.exists(self.path(".codex-accounts", ".lock")))
 
 
 class RemoveTest(CxTestCase):

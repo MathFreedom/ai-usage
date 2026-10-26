@@ -19,6 +19,7 @@ import calendar
 import contextlib
 import fcntl
 import json
+import math
 import os
 import re
 import shutil
@@ -65,11 +66,16 @@ def default_name(email):
 @contextlib.contextmanager
 def locked():
     """Serializes commands that read and write the store (the app runs `cx json` periodically).
-    Nothing to protect while the store doesn't exist: don't create it just to hold a lock."""
-    if not os.path.isdir(STORE):
+    Nothing to protect while the store doesn't exist: don't create it just to hold a lock. A store
+    where the lock can't be created (read-only) runs unlocked: a command that writes fails anyway."""
+    try:
+        lock = open(os.path.join(STORE, ".lock"), "w") if os.path.isdir(STORE) else None
+    except OSError:
+        lock = None
+    if lock is None:
         yield
         return
-    with open(os.path.join(STORE, ".lock"), "w") as lock:
+    with lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         yield
 
@@ -151,6 +157,22 @@ def sync_active():
     return None
 
 
+def finite(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
+def clean_rate_limit(rl):
+    """The usage's rate_limit with each window kept only if its numbers are numbers: a malformed
+    window is dropped rather than shown with a made-up value (or crash cx, or print NaN)."""
+    rl = dict(rl) if isinstance(rl, dict) else {}
+    for key in ("primary_window", "secondary_window"):
+        w = rl.get(key)
+        valid = isinstance(w, dict) and all(
+            w.get(f) is None or finite(w[f]) for f in ("used_percent", "limit_window_seconds", "reset_at"))
+        rl[key] = w if valid else None
+    return rl
+
+
 def fetch_usage(auth):
     tokens = auth.get("tokens") or {}
     if not tokens.get("access_token"):
@@ -170,13 +192,18 @@ def fetch_usage(auth):
         return {"error": f"HTTP {e.code}"}
     except Exception:
         return {"error": "usage unreachable"}
+    if not isinstance(usage, dict):
+        return {"error": "usage unreachable"}
+    if "rate_limit" in usage:
+        usage["rate_limit"] = clean_rate_limit(usage["rate_limit"])
     # Free "full reset" credits: optional, ignored if the endpoint fails
     try:
         with urllib.request.urlopen(urllib.request.Request(RESETS_URL, headers=headers), timeout=10) as r:
             credits = json.load(r).get("credits") or []
         usage["_resets"] = sorted(
             c["expires_at"] for c in credits
-            if c.get("status") == "available" and c.get("is_supported_by_plan") and c.get("expires_at"))
+            if isinstance(c, dict) and c.get("status") == "available" and c.get("is_supported_by_plan")
+            and isinstance(c.get("expires_at"), str))
     except Exception:
         pass
     return usage
@@ -243,7 +270,7 @@ def last_known(auths, usages):
                            "resets": [r for r in u.get("_resets") or [] if isinstance(r, str)]}
         elif cache.get(name, {}).get("key") == key:
             last = cache[name]
-            usages[name] = {"error": u["error"], "rate_limit": last["rate_limit"], "_last_seen": last["at"],
+            usages[name] = {"error": u["error"], "rate_limit": clean_rate_limit(last["rate_limit"]), "_last_seen": last["at"],
                             "_resets": [r for r in last["resets"] if not expired(r, now)]}
     if json.dumps(cache, sort_keys=True) != before:
         try:
