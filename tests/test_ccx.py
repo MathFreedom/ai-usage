@@ -238,6 +238,34 @@ class UseTest(CcxTestCase):
         self.assertEqual(json.loads(self.keychain.items[ACTIVE][1])["claudeAiOauth"]["accessToken"], "tok-a")
 
 
+class FetchUsageTest(CcxTestCase):
+    def fetch(self, response):
+        with mock.patch.object(self.ccx, "api_get", lambda path, token: response):
+            return self.ccx.fetch_usage(claude_creds("tok-a"))
+
+    def test_non_object_response_is_a_failure(self):
+        for response in ([], None, "x", {"limits": "x"}, {"limits": 5}):
+            self.assertIsNone(self.fetch(response), response)
+        self.assertEqual(self.fetch({"limits": None}), [])
+
+    def test_malformed_limits_are_dropped(self):
+        limits = [5, "x", None,
+                  {"kind": "session", "percent": "x"}, {"kind": "session", "percent": float("nan")},
+                  {"kind": "weekly_all", "percent": float("inf")}, {"kind": "weekly_all", "percent": True},
+                  {"kind": "weekly_all", "percent": 10 ** 400}, {"kind": "weekly_all", "percent": 1e12},
+                  {"kind": "weekly_scoped", "percent": 4, "scope": "x"},
+                  {"kind": "weekly_scoped", "percent": 5, "scope": {"model": {"display_name": 7}}},
+                  {"kind": "weekly_scoped", "percent": 6, "scope": {"model": "x"}},
+                  {"kind": "session", "percent": 12, "resets_at": 5},
+                  {"kind": "weekly_all", "percent": None, "resets_at": "2099-01-07T00:00:00+00:00"}]
+        self.assertEqual(self.fetch({"limits": limits}), [
+            {"label": "Other weekly", "percent": 4, "resets_at": None},
+            {"label": "Other weekly", "percent": 5, "resets_at": None},
+            {"label": "Other weekly", "percent": 6, "resets_at": None},
+            {"label": "5h", "percent": 12, "resets_at": None},
+            {"label": "Weekly", "percent": 0, "resets_at": "2099-01-07T00:00:00+00:00"}])
+
+
 class UsageTest(CcxTestCase):
     def setUp(self):
         super().setUp()

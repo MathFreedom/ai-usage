@@ -65,13 +65,24 @@ def default_name(email):
 @contextlib.contextmanager
 def locked():
     """Serializes commands that read and write the store (the app runs `cx json` periodically).
-    Nothing to protect while the store doesn't exist: don't create it just to hold a lock."""
-    if not os.path.isdir(STORE):
+    Nothing to protect while the store doesn't exist: don't create it just to hold a lock. The lock
+    is opened read-only, so a read-only .lock still locks; only a read-only store with no .lock yet
+    runs unlocked (its commands can't write anyway)."""
+    path = os.path.join(STORE, ".lock")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_CREAT, 0o600) if os.path.isdir(STORE) else None
+    except OSError:
+        if os.access(STORE, os.W_OK) or os.path.lexists(path):
+            raise  # a lock that exists or could be created must be held, never skipped
+        fd = None
+    if fd is None:
         yield
         return
-    with open(os.path.join(STORE, ".lock"), "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
         yield
+    finally:
+        os.close(fd)
 
 
 def load(path):
@@ -136,9 +147,10 @@ def active_name():
     return None
 
 
-def sync_active():
+def sync_active(listing=False):
     """Copy the live auth.json (possibly refreshed by Codex) back into its stored account.
-    auth.json is read once, so the copy can't mix two accounts if it changes meanwhile."""
+    auth.json is read once, so the copy can't mix two accounts if it changes meanwhile.
+    A listing still works when the copy can't be written (read-only store); a switch doesn't."""
     if not os.path.exists(AUTH):
         return None
     live = load(AUTH)
@@ -146,9 +158,45 @@ def sync_active():
     for name, path in accounts().items():
         if identity(load(path))[2] == key:
             if load(path) != live:
-                write_private(path, live)
+                try:
+                    write_private(path, live)
+                except OSError:
+                    if not listing:
+                        raise
             return name
     return None
+
+
+def finite(x):
+    """A usable number: not a bool, NaN, infinity or an absurd magnitude (which the app can't hold)."""
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and -1e12 < x < 1e12
+
+
+def sane(v):
+    """No number anywhere in v that finite() rejects (NaN would make cx json invalid JSON).
+    A loop, not recursion: any nesting json.load accepts is walked without a RecursionError."""
+    todo = [v]
+    while todo:
+        x = todo.pop()
+        if isinstance(x, dict):
+            todo.extend(x.values())
+        elif isinstance(x, list):
+            todo.extend(x)
+        elif isinstance(x, (int, float)) and not isinstance(x, bool) and not finite(x):
+            return False
+    return True
+
+
+def clean_rate_limit(rl):
+    """The usage's rate_limit with each window kept only if its numbers are numbers: a malformed
+    window is dropped rather than shown with a made-up value (or crash cx, or print NaN)."""
+    rl = dict(rl) if isinstance(rl, dict) else {}
+    for key in ("primary_window", "secondary_window"):
+        w = rl.get(key)
+        valid = isinstance(w, dict) and all(
+            w.get(f) is None or finite(w[f]) for f in ("used_percent", "limit_window_seconds", "reset_at")) and sane(w)
+        rl[key] = w if valid else None
+    return rl
 
 
 def fetch_usage(auth):
@@ -170,13 +218,18 @@ def fetch_usage(auth):
         return {"error": f"HTTP {e.code}"}
     except Exception:
         return {"error": "usage unreachable"}
+    if not isinstance(usage, dict):
+        return {"error": "usage unreachable"}
+    if "rate_limit" in usage:
+        usage["rate_limit"] = clean_rate_limit(usage["rate_limit"])
     # Free "full reset" credits: optional, ignored if the endpoint fails
     try:
         with urllib.request.urlopen(urllib.request.Request(RESETS_URL, headers=headers), timeout=10) as r:
             credits = json.load(r).get("credits") or []
         usage["_resets"] = sorted(
             c["expires_at"] for c in credits
-            if c.get("status") == "available" and c.get("is_supported_by_plan") and c.get("expires_at"))
+            if isinstance(c, dict) and c.get("status") == "available" and c.get("is_supported_by_plan")
+            and isinstance(c.get("expires_at"), str) and c["expires_at"])
     except Exception:
         pass
     return usage
@@ -189,14 +242,14 @@ def fmt_window(w):
     label = "session" if secs <= 6 * 3600 else "weekly" if secs >= 6 * 86400 else f"{secs // 3600}h"
     pct = int(w.get("used_percent") or 0)
     color = RED if pct >= 80 else YELLOW if pct >= 50 else GREEN
-    r = max(0, int(w.get("reset_at", time.time()) - time.time()))
+    r = max(0, int((w.get("reset_at") or time.time()) - time.time()))
     left = f"{r // 86400}d" if r >= 86400 else f"{r // 3600}h{r % 3600 // 60:02d}" if r >= 3600 else f"{r // 60}m"
     return f"{label}: {color}{left} {pct}%{RESET}"
 
 
 def all_usages():
     """(active account name, {name: auth}, {name: usage response})."""
-    current = sync_active()
+    current = sync_active(listing=True)
     auths = {n: load(p) for n, p in accounts().items()}
     with ThreadPoolExecutor(max_workers=8) as pool:
         usages = dict(zip(auths, pool.map(fetch_usage, auths.values())))
@@ -243,7 +296,7 @@ def last_known(auths, usages):
                            "resets": [r for r in u.get("_resets") or [] if isinstance(r, str)]}
         elif cache.get(name, {}).get("key") == key:
             last = cache[name]
-            usages[name] = {"error": u["error"], "rate_limit": last["rate_limit"], "_last_seen": last["at"],
+            usages[name] = {"error": u["error"], "rate_limit": clean_rate_limit(last["rate_limit"]), "_last_seen": last["at"],
                             "_resets": [r for r in last["resets"] if not expired(r, now)]}
     if json.dumps(cache, sort_keys=True) != before:
         try:

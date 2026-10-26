@@ -1,5 +1,6 @@
 """bin/cx — Codex accounts. Runs in a temp HOME; network, processes and sockets are blocked."""
 import contextlib
+import errno
 import io
 import json
 import os
@@ -429,6 +430,42 @@ class LastKnownUsageTest(CxTestCase):
             self.accounts_json()
             self.assertEqual(self.cache()["alice"]["rate_limit"], self.LIVE["rate_limit"], content)
 
+    def test_malformed_window_in_the_file_is_dropped(self):
+        bad = dict(self.WEEK, used_percent=float("nan"))
+        entry = {"key": ["user-alice", "acct-alice"], "at": 1.0, "resets": [],
+                 "rate_limit": {"primary_window": bad, "secondary_window": self.WEEK}}
+        with open(self.path(".codex-accounts", "_usage.json"), "w") as f:
+            json.dump({"alice": entry}, f)  # NaN written as JSON's NaN, as a hand edit could
+        code, out = self.run_cx("json")
+        self.assertEqual(code, 0, out)
+        alice = json.loads(out, parse_constant=self.fail)[0]  # no NaN printed
+        self.assertEqual((alice["windows"], alice["last_seen"]), ([self.WEEK], 1.0))
+        self.assertEqual(self.run_cx()[0], 0)
+        for bad in (dict(self.WEEK, reset_at=10 ** 400), dict(self.WEEK, extra={"x": [float("nan")]})):
+            entry["rate_limit"]["primary_window"] = bad
+            with open(self.path(".codex-accounts", "_usage.json"), "w") as f:
+                json.dump({"alice": entry}, f)
+            self.assertEqual(json.loads(self.run_cx("json")[1], parse_constant=self.fail)[0]["windows"], [self.WEEK])
+
+    def test_deeply_nested_window_in_the_file(self):
+        entry = {"key": ["user-alice", "acct-alice"], "at": 1.0, "resets": [], "rate_limit": {}}
+        with open(self.path(".codex-accounts", "_usage.json"), "w") as f:
+            f.write(json.dumps({"alice": entry})[:-4] + '{"primary_window": {"used_percent": 1, "extra": %s}, '
+                    '"secondary_window": %s}}}' % ("[" * 600 + "NaN" + "]" * 600, json.dumps(self.WEEK)))
+        with open(self.path(".codex-accounts", "_usage.json")) as f:
+            json.load(f)  # the file itself is valid JSON
+        code, out = self.run_cx("json")
+        self.assertEqual(code, 0, out[-300:])
+        alice = json.loads(out, parse_constant=self.fail)[0]
+        self.assertEqual((alice["windows"], alice["last_seen"]), ([self.WEEK], 1.0))
+        self.assertEqual(self.run_cx()[0], 0)
+
+    def test_list_with_a_null_reset_time(self):
+        self.usage["alice@example.com"] = {"rate_limit": {"primary_window": dict(self.WEEK, reset_at=None)}}
+        code, out = self.run_cx()
+        self.assertEqual(code, 0, out)
+        self.assertIn("42%", out)
+
     def test_failed_write_still_shows_the_usage(self):
         self.usage["alice@example.com"] = self.LIVE
         with mock.patch.object(self.cx, "write_private", side_effect=PermissionError("read-only")):
@@ -479,6 +516,176 @@ class FetchUsageTest(SafeTestCase):
                               (TimeoutError("timed out"), "usage unreachable"), (http, "HTTP 429")):
             with mock.patch.object(self.cx.urllib.request, "urlopen", side_effect=raised):
                 self.assertEqual(self.cx.fetch_usage(ALICE), {"error": error})
+
+    WEEK = {"used_percent": 42, "limit_window_seconds": 604800, "reset_at": 2000000000}
+
+    def fetch(self, usage, credits='{"credits": []}'):
+        """fetch_usage with the usage endpoint answering `usage` (a JSON text, NaN allowed)."""
+        bodies = {self.cx.USAGE_URL: usage, self.cx.RESETS_URL: credits}
+        urlopen = lambda req, timeout=None: io.BytesIO(bodies[req.full_url].encode())
+        with mock.patch.object(self.cx.urllib.request, "urlopen", urlopen):
+            return self.cx.fetch_usage(ALICE)
+
+    def test_non_object_response_is_unreachable(self):
+        for body in ("[]", "null", "5", '"x"'):
+            self.assertEqual(self.fetch(body), {"error": "usage unreachable"}, body)
+
+    def test_malformed_window_is_dropped(self):
+        for field in ("used_percent", "limit_window_seconds", "reset_at"):
+            for bad in ('"x"', "NaN", "Infinity", "-Infinity", "true", "[]", "1" + "0" * 400, "1e12", "-1e12"):
+                fields = dict({k: json.dumps(v) for k, v in self.WEEK.items()}, **{field: bad})
+                window = "{" + ", ".join(f'"{k}": {v}' for k, v in fields.items()) + "}"
+                body = '{"rate_limit": {"primary_window": %s, "secondary_window": %s}}' % (window, json.dumps(self.WEEK))
+                rl = self.fetch(body)["rate_limit"]
+                self.assertEqual((rl["primary_window"], rl["secondary_window"]), (None, self.WEEK), (field, bad))
+        for window in ('"x"', "[]", "5"):
+            self.assertIsNone(self.fetch('{"rate_limit": {"primary_window": %s}}' % window)["rate_limit"]["primary_window"])
+        for extra in ("NaN", "1" + "0" * 400, "1000000000000", '{"x": NaN}', "[Infinity]", '[{"x": %s}]' % ("1" + "0" * 400)):
+            body = '{"rate_limit": {"primary_window": {"used_percent": 1, "reset_after_seconds": %s}}}' % extra
+            self.assertIsNone(self.fetch(body)["rate_limit"]["primary_window"], extra)  # any number, nested too
+        kept = dict(self.WEEK, reset_after_seconds=60, note="x", flag=True, extra={"b": [False]})
+        self.assertEqual(self.fetch(json.dumps({"rate_limit": {"primary_window": kept}}))["rate_limit"]["primary_window"], kept)
+        nulls = dict(self.WEEK, limit_window_seconds=None, reset_at=None)
+        self.assertEqual(self.fetch(json.dumps({"rate_limit": {"primary_window": nulls}}))["rate_limit"]["primary_window"], nulls)
+
+    def test_sane_walks_any_depth(self):
+        for bottom, ok in ((1, True), (float("nan"), False)):
+            v = bottom
+            for _ in range(100000):  # far deeper than any recursion would go
+                v = [{"a": v}]
+            self.assertIs(self.cx.sane(v), ok)
+        for v, ok in (([1, float("nan")], False), ([float("nan"), 1], False), ({"a": float("nan"), "b": 1}, False),
+                      ({"a": 1, "b": float("inf")}, False), ([1, {"a": [2, True, "x", None]}], True)):
+            self.assertIs(self.cx.sane(v), ok, v)
+
+    def test_deeply_nested_window(self):
+        for bottom, kept in (("1", True), ("NaN", False)):
+            nested = "[" * 600 + bottom + "]" * 600  # past a two-frames-per-level recursion, within json.load's limit (~960)
+            body = '{"rate_limit": {"primary_window": {"used_percent": 1, "extra": %s}}}' % nested
+            window = self.fetch(body)["rate_limit"]["primary_window"]
+            self.assertEqual(window is not None, kept, bottom)
+
+    def test_rate_limit_not_an_object(self):
+        for rl in ('"x"', "5", "[]", "null", "true"):
+            self.assertEqual(self.fetch('{"rate_limit": %s}' % rl)["rate_limit"],
+                             {"primary_window": None, "secondary_window": None}, rl)
+        self.assertNotIn("rate_limit", self.fetch('{"plan_type": "free"}'))  # no limits: left as the API says
+
+    def test_malformed_credits_are_ignored(self):
+        credit = {"status": "available", "is_supported_by_plan": True, "expires_at": "2099-01-01T00:00:00Z"}
+        credits = json.dumps({"credits": [5, "x", dict(credit, expires_at=5), dict(credit, expires_at=None),
+                                          dict(credit, expires_at=""), credit]})
+        self.assertEqual(self.fetch(json.dumps({"rate_limit": {}}), credits)["_resets"], ["2099-01-01T00:00:00Z"])
+
+
+class MalformedAccountTest(SafeTestCase):
+    """One account's malformed usage leaves the others listed."""
+
+    def test_other_accounts_still_listed(self):
+        cx = load_tool("cx")
+        bob = codex_auth("bob@example.com", "user-bob", "acct-bob")
+        for name, auth in (("alice", ALICE), ("bob", bob)):
+            self.write_json(auth, ".codex-accounts", f"{name}.json")
+        self.write_json(ALICE, ".codex", "auth.json")
+        week = {"used_percent": 42, "limit_window_seconds": 604800, "reset_at": 2000000000}
+
+        def urlopen(req, timeout=None):
+            if req.full_url == cx.RESETS_URL:
+                return io.BytesIO(b'{"credits": []}')
+            if req.get_header("Chatgpt-account-id") == "acct-alice":
+                return io.BytesIO(b'{"rate_limit": {"primary_window": {"used_percent": NaN}}}')
+            return io.BytesIO(json.dumps({"rate_limit": {"primary_window": week}}).encode())
+
+        with mock.patch.object(cx.urllib.request, "urlopen", urlopen):
+            for argv in (["json"], []):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    cx.main(argv)
+                if argv:
+                    rows = {a["name"]: a for a in json.loads(out.getvalue(), parse_constant=self.fail)}
+                    self.assertEqual((rows["alice"]["windows"], rows["bob"]["windows"]), ([], [week]))
+                else:
+                    self.assertIn("42%", out.getvalue())
+
+
+class LockTest(CxTestCase):
+    def setUp(self):
+        super().setUp()
+        self.save("alice", ALICE)
+        self.sign_in(ALICE)
+        self.flocks = []
+        patcher = mock.patch.object(self.cx.fcntl, "flock", lambda fd, op: self.flocks.append(op))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def read_only_store(self):
+        os.chmod(self.path(".codex-accounts"), 0o500)
+        self.addCleanup(os.chmod, self.path(".codex-accounts"), 0o700)
+
+    def test_commands_hold_the_lock(self):
+        self.addCleanup(os.umask, os.umask(0))  # the mode below is cx's own, not the umask's
+        for argv in (["json"], [], ["save", "alice"]):
+            self.flocks.clear()
+            self.assertEqual(self.run_cx(*argv)[0], 0, argv)
+            self.assertEqual(self.flocks, [self.cx.fcntl.LOCK_EX], argv)
+        self.assertEqual(os.stat(self.path(".codex-accounts", ".lock")).st_mode & 0o777, 0o600)
+
+    def test_lock_that_cant_be_created_in_a_writable_store(self):
+        real_open = os.open
+
+        def full_disk(path, *args):
+            if path.endswith(".lock"):
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real_open(path, *args)
+
+        with mock.patch.object(self.cx.os, "open", full_disk), self.assertRaises(OSError):
+            self.run_cx("json")
+        self.assertEqual(self.flocks, [])
+
+    def test_read_only_lock_file_still_locks(self):
+        lock = self.path(".codex-accounts", ".lock")
+        open(lock, "w").close()
+        os.chmod(lock, 0o444)
+        self.assertEqual(self.run_cx("json")[0], 0)
+        self.assertEqual(self.flocks, [self.cx.fcntl.LOCK_EX])
+
+    def test_unreadable_lock_is_an_error(self):
+        lock = self.path(".codex-accounts", ".lock")
+        open(lock, "w").close()
+        os.chmod(lock, 0o000)
+        self.addCleanup(os.chmod, lock, 0o600)
+        with self.assertRaises(PermissionError):  # never a silent unlocked run in a writable store
+            self.run_cx("json")
+        self.read_only_store()
+        with self.assertRaises(PermissionError):  # nor when the lock exists in a read-only one
+            self.run_cx("json")
+        self.assertEqual(self.flocks, [])
+
+    def test_dangling_lock_link_in_a_read_only_store(self):
+        os.symlink("missing", self.path(".codex-accounts", ".lock"))  # target can't be created there
+        self.read_only_store()
+        with self.assertRaises(OSError):
+            self.run_cx("json")
+        self.assertEqual(self.flocks, [])
+
+    def test_listing_works_in_a_read_only_store(self):
+        self.read_only_store()
+        for argv in (["json"], []):
+            code, out = self.run_cx(*argv)
+            self.assertEqual(code, 0, out)
+        self.assertEqual(self.flocks, [])
+        self.assertFalse(os.path.exists(self.path(".codex-accounts", ".lock")))
+
+    def test_rotated_tokens_in_a_read_only_store(self):
+        rotated = codex_auth("alice@example.com", "user-alice", "acct-alice", refresh="r2")
+        self.sign_in(rotated)
+        self.read_only_store()
+        code, out = self.run_cx("json")
+        self.assertEqual(code, 0, out)
+        self.assertTrue(json.loads(out)[0]["active"])
+        with self.assertRaises(PermissionError):  # a switch must not go on without saving them
+            self.cx.sync_active()
+        self.assertEqual(self.stored("alice"), ALICE)
 
 
 class RemoveTest(CxTestCase):

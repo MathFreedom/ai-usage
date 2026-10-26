@@ -192,19 +192,31 @@ def fetch_usage(creds):
         limits = api_get("usage", token).get("limits") or []
     except Exception:
         return None
+    if not isinstance(limits, list):
+        return None
     windows = []
     for limit in limits:
+        if not isinstance(limit, dict) or not (limit.get("percent") is None or finite(limit["percent"])):
+            continue  # malformed: dropped rather than shown with a made-up value
         kind = limit.get("kind")
         if kind == "session":
             label = "5h"
         elif kind == "weekly_all":
             label = "Weekly"
         else:
-            model = (((limit.get("scope") or {}).get("model")) or {}).get("display_name")
-            label = f"{model or 'Other'} weekly"
+            scope = limit.get("scope")
+            model = scope.get("model") if isinstance(scope, dict) else None
+            name = model.get("display_name") if isinstance(model, dict) else None
+            label = f"{name if isinstance(name, str) and name else 'Other'} weekly"
+        resets_at = limit.get("resets_at")
         windows.append({"label": label, "percent": int(limit.get("percent") or 0),
-                        "resets_at": limit.get("resets_at")})
+                        "resets_at": resets_at if isinstance(resets_at, str) else None})
     return windows
+
+
+def finite(x):
+    """A usable number: not a bool, NaN, infinity or an absurd magnitude (which the app can't hold)."""
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and -1e12 < x < 1e12
 
 
 # Accounts
