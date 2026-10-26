@@ -451,8 +451,9 @@ class LastKnownUsageTest(CxTestCase):
         entry = {"key": ["user-alice", "acct-alice"], "at": 1.0, "resets": [], "rate_limit": {}}
         with open(self.path(".codex-accounts", "_usage.json"), "w") as f:
             f.write(json.dumps({"alice": entry})[:-4] + '{"primary_window": {"used_percent": 1, "extra": %s}, '
-                    '"secondary_window": %s}}}' % ("[" * 900 + "NaN" + "]" * 900, json.dumps(self.WEEK)))
-        json.load(open(self.path(".codex-accounts", "_usage.json")))  # the file itself is valid JSON
+                    '"secondary_window": %s}}}' % ("[" * 600 + "NaN" + "]" * 600, json.dumps(self.WEEK)))
+        with open(self.path(".codex-accounts", "_usage.json")) as f:
+            json.load(f)  # the file itself is valid JSON
         code, out = self.run_cx("json")
         self.assertEqual(code, 0, out[-300:])
         alice = json.loads(out, parse_constant=self.fail)[0]
@@ -559,7 +560,7 @@ class FetchUsageTest(SafeTestCase):
 
     def test_deeply_nested_window(self):
         for bottom, kept in (("1", True), ("NaN", False)):
-            nested = "[" * 900 + bottom + "]" * 900  # as deep as json.load goes
+            nested = "[" * 600 + bottom + "]" * 600  # past a two-frames-per-level recursion, within json.load's
             body = '{"rate_limit": {"primary_window": {"used_percent": 1, "extra": %s}}}' % nested
             window = self.fetch(body)["rate_limit"]["primary_window"]
             self.assertEqual(window is not None, kept, bottom)
