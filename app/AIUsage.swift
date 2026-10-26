@@ -314,7 +314,8 @@ func fetchClaudeLive(token: String) async -> [UsageWindow]? {
     }
 }
 
-/// Fallback: last snapshot saved by the Claude Code status line.
+/// Last resort: the last snapshot saved by the Claude Code status line, read only when no saved
+/// account is active, the usage API doesn't answer and nothing was read before.
 func loadClaude() -> (windows: [UsageWindow], updated: Date?) {
     guard let data = FileManager.default.contents(atPath: claudeCachePath),
           let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
@@ -339,7 +340,7 @@ final class UsageModel: ObservableObject {
     @Published var codex: [Account] = []
     @Published var codexFailed = false
     @Published var claudeAccounts: [Account] = []  // from ccx; rows shown once 2+ accounts are saved
-    @Published var claudeUnused = false  // last Claude refresh ended with no account nor data (set at its end: refresh() first reloads the cache)
+    @Published var claudeUnused = false  // last Claude refresh ended with no account nor data
     @Published var codexLoaded = false
     @Published var loading = false
     @Published var switching: String?  // Account.key being switched to
@@ -371,8 +372,6 @@ final class UsageModel: ObservableObject {
 
     func refresh() {
         guard live else { return }
-        (claude, claudeUpdated) = loadClaude()
-        updateMenuBarImage()
         guard !loading else { return }
         loading = true
         lastRefresh = Date()
@@ -388,6 +387,8 @@ final class UsageModel: ObservableObject {
                 claudeUpdated = active.lastSeen ?? Date()
             } else if !(await refreshClaudeFromKeychain()) {
                 answered = false
+                // Nothing read yet (e.g. launched offline): the status line's snapshot, which can lag a reset.
+                if claude.isEmpty { (claude, claudeUpdated) = loadClaude() }
             }
             if answered { claudeUnused = claudeAccounts.isEmpty && claude.isEmpty }
             updateMenuBarImage()
