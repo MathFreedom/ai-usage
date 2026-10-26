@@ -440,10 +440,11 @@ class LastKnownUsageTest(CxTestCase):
         alice = json.loads(out, parse_constant=self.fail)[0]  # no NaN printed
         self.assertEqual((alice["windows"], alice["last_seen"]), ([self.WEEK], 1.0))
         self.assertEqual(self.run_cx()[0], 0)
-        entry["rate_limit"]["primary_window"] = dict(self.WEEK, reset_at=10 ** 400)
-        with open(self.path(".codex-accounts", "_usage.json"), "w") as f:
-            json.dump({"alice": entry}, f)
-        self.assertEqual(json.loads(self.run_cx("json")[1])[0]["windows"], [self.WEEK])
+        for bad in (dict(self.WEEK, reset_at=10 ** 400), dict(self.WEEK, extra={"x": [float("nan")]})):
+            entry["rate_limit"]["primary_window"] = bad
+            with open(self.path(".codex-accounts", "_usage.json"), "w") as f:
+                json.dump({"alice": entry}, f)
+            self.assertEqual(json.loads(self.run_cx("json")[1], parse_constant=self.fail)[0]["windows"], [self.WEEK])
 
     def test_list_with_a_null_reset_time(self):
         self.usage["alice@example.com"] = {"rate_limit": {"primary_window": dict(self.WEEK, reset_at=None)}}
@@ -525,8 +526,9 @@ class FetchUsageTest(SafeTestCase):
                 self.assertEqual((rl["primary_window"], rl["secondary_window"]), (None, self.WEEK), (field, bad))
         for window in ('"x"', "[]", "5"):
             self.assertIsNone(self.fetch('{"rate_limit": {"primary_window": %s}}' % window)["rate_limit"]["primary_window"])
-        extra = '{"rate_limit": {"primary_window": {"used_percent": 1, "reset_after_seconds": NaN}}}'
-        self.assertIsNone(self.fetch(extra)["rate_limit"]["primary_window"])  # any other number field too
+        for extra in ("NaN", "1" + "0" * 400, "1000000000000", '{"x": NaN}', "[Infinity]", '[{"x": %s}]' % ("1" + "0" * 400)):
+            body = '{"rate_limit": {"primary_window": {"used_percent": 1, "reset_after_seconds": %s}}}' % extra
+            self.assertIsNone(self.fetch(body)["rate_limit"]["primary_window"], extra)  # any number, nested too
         kept = dict(self.WEEK, reset_after_seconds=60, note="x")
         self.assertEqual(self.fetch(json.dumps({"rate_limit": {"primary_window": kept}}))["rate_limit"]["primary_window"], kept)
         nulls = dict(self.WEEK, limit_window_seconds=None, reset_at=None)
@@ -601,6 +603,18 @@ class LockTest(CxTestCase):
         os.chmod(lock, 0o444)
         self.assertEqual(self.run_cx("json")[0], 0)
         self.assertEqual(self.flocks, [self.cx.fcntl.LOCK_EX])
+
+    def test_unreadable_lock_is_an_error(self):
+        lock = self.path(".codex-accounts", ".lock")
+        open(lock, "w").close()
+        os.chmod(lock, 0o000)
+        self.addCleanup(os.chmod, lock, 0o600)
+        with self.assertRaises(PermissionError):  # never a silent unlocked run in a writable store
+            self.run_cx("json")
+        self.read_only_store()
+        with self.assertRaises(PermissionError):  # nor when the lock exists in a read-only one
+            self.run_cx("json")
+        self.assertEqual(self.flocks, [])
 
     def test_listing_works_in_a_read_only_store(self):
         self.read_only_store()

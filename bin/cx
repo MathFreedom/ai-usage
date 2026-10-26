@@ -68,9 +68,12 @@ def locked():
     Nothing to protect while the store doesn't exist: don't create it just to hold a lock. The lock
     is opened read-only, so a read-only .lock still locks; only a read-only store with no .lock yet
     runs unlocked (its commands can't write anyway)."""
+    path = os.path.join(STORE, ".lock")
     try:
-        fd = os.open(os.path.join(STORE, ".lock"), os.O_RDONLY | os.O_CREAT, 0o600) if os.path.isdir(STORE) else None
+        fd = os.open(path, os.O_RDONLY | os.O_CREAT, 0o600) if os.path.isdir(STORE) else None
     except OSError:
+        if os.access(STORE, os.W_OK) or os.path.lexists(path):
+            raise  # a lock that exists or could be created must be held, never skipped
         fd = None
     if fd is None:
         yield
@@ -169,6 +172,15 @@ def finite(x):
     return isinstance(x, (int, float)) and not isinstance(x, bool) and -1e12 < x < 1e12
 
 
+def sane(v):
+    """No number anywhere in v that finite() rejects (NaN would make cx json invalid JSON)."""
+    if isinstance(v, dict):
+        return all(sane(x) for x in v.values())
+    if isinstance(v, list):
+        return all(sane(x) for x in v)
+    return finite(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else True
+
+
 def clean_rate_limit(rl):
     """The usage's rate_limit with each window kept only if its numbers are numbers: a malformed
     window is dropped rather than shown with a made-up value (or crash cx, or print NaN)."""
@@ -176,8 +188,7 @@ def clean_rate_limit(rl):
     for key in ("primary_window", "secondary_window"):
         w = rl.get(key)
         valid = isinstance(w, dict) and all(
-            w.get(f) is None or finite(w[f]) for f in ("used_percent", "limit_window_seconds", "reset_at")) and all(
-            finite(v) for v in w.values() if isinstance(v, (int, float)) and not isinstance(v, bool))
+            w.get(f) is None or finite(w[f]) for f in ("used_percent", "limit_window_seconds", "reset_at")) and sane(w)
         rl[key] = w if valid else None
     return rl
 

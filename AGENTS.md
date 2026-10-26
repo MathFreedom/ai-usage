@@ -95,9 +95,12 @@ does not call it itself when ccx has accounts.
 Plans seen: Codex Pro has only a weekly window (no 5h); `prolite` = "Pro Lite"; Claude `max`.
 
 Usage responses are checked before use (#19): a response that is not a JSON object counts as a
-failure (`usage unreachable` in `cx`, the last known usage in `ccx`), and a window that is not an object,
-or holds a number field that is not a plain finite number (text, boolean, NaN, infinity, a
-magnitude of 1e12 or more), is dropped. One malformed
+failure (`usage unreachable` in `cx`, the last known usage in `ccx`), and a window is dropped when it is
+not an object, when one of the fields the app reads (`used_percent`, `limit_window_seconds`,
+`reset_at` for Codex; `percent` for Claude) is neither null nor a number, or is NaN, infinite
+or of magnitude 1e12 or more. `cx json` prints Codex windows as received, so a Codex window is
+also dropped when any number nested in it fails that test; `ccx` rebuilds Claude windows from
+`percent` and `resets_at` (kept only if a string). One malformed
 account never stops the others from being listed, and a usage response never makes `cx json` or
 `ccx json` print NaN.
 
@@ -115,7 +118,7 @@ Commands: `cx` (list + usage), `cx save <name>`, `cx add [name]`, `cx use <name>
 - Account identity = (`chatgpt_user_id` from id_token claims, `tokens.account_id`).
 - `locked()` serializes commands on `~/.codex-accounts/.lock` (opened read-only, created if
   missing). Only a read-only store with no `.lock` yet runs unlocked; listing then still works,
-  without refreshing the active account's copy.
+  without refreshing the active account's copy. Any other failure to open the lock is an error.
 - Last known usage: `~/.codex-accounts/_usage.json` (0600) keeps, per account, the last usage read
   (`rate_limit`, free resets, time `at`) and the identity it was read with. When the usage call
   fails (offline, HTTP error, expired token), `cx json` returns that reading with `last_seen` and
