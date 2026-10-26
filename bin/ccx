@@ -22,7 +22,6 @@ import calendar
 import getpass
 import hashlib
 import json
-import math
 import os
 import re
 import shutil
@@ -216,7 +215,8 @@ def fetch_usage(creds):
 
 
 def finite(x):
-    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+    """A usable number: not a bool, NaN, infinity or an absurd magnitude (which the app can't hold)."""
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and -1e12 < x < 1e12
 
 
 # Accounts

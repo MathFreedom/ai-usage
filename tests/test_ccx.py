@@ -252,6 +252,7 @@ class FetchUsageTest(CcxTestCase):
         limits = [5, "x", None,
                   {"kind": "session", "percent": "x"}, {"kind": "session", "percent": float("nan")},
                   {"kind": "weekly_all", "percent": float("inf")}, {"kind": "weekly_all", "percent": True},
+                  {"kind": "weekly_all", "percent": 10 ** 400}, {"kind": "weekly_all", "percent": 1e12},
                   {"kind": "weekly_scoped", "percent": 4, "scope": "x"},
                   {"kind": "weekly_scoped", "percent": 5, "scope": {"model": {"display_name": 7}}},
                   {"kind": "weekly_scoped", "percent": 6, "scope": {"model": "x"}},

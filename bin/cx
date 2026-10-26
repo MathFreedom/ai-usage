@@ -19,7 +19,6 @@ import calendar
 import contextlib
 import fcntl
 import json
-import math
 import os
 import re
 import shutil
@@ -66,18 +65,21 @@ def default_name(email):
 @contextlib.contextmanager
 def locked():
     """Serializes commands that read and write the store (the app runs `cx json` periodically).
-    Nothing to protect while the store doesn't exist: don't create it just to hold a lock. A store
-    where the lock can't be created (read-only) runs unlocked: a command that writes fails anyway."""
+    Nothing to protect while the store doesn't exist: don't create it just to hold a lock. The lock
+    is opened read-only, so a read-only .lock still locks; only a read-only store with no .lock yet
+    runs unlocked (its commands can't write anyway)."""
     try:
-        lock = open(os.path.join(STORE, ".lock"), "w") if os.path.isdir(STORE) else None
+        fd = os.open(os.path.join(STORE, ".lock"), os.O_RDONLY | os.O_CREAT, 0o600) if os.path.isdir(STORE) else None
     except OSError:
-        lock = None
-    if lock is None:
+        fd = None
+    if fd is None:
         yield
         return
-    with lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
         yield
+    finally:
+        os.close(fd)
 
 
 def load(path):
@@ -142,9 +144,10 @@ def active_name():
     return None
 
 
-def sync_active():
+def sync_active(listing=False):
     """Copy the live auth.json (possibly refreshed by Codex) back into its stored account.
-    auth.json is read once, so the copy can't mix two accounts if it changes meanwhile."""
+    auth.json is read once, so the copy can't mix two accounts if it changes meanwhile.
+    A listing still works when the copy can't be written (read-only store); a switch doesn't."""
     if not os.path.exists(AUTH):
         return None
     live = load(AUTH)
@@ -152,13 +155,18 @@ def sync_active():
     for name, path in accounts().items():
         if identity(load(path))[2] == key:
             if load(path) != live:
-                write_private(path, live)
+                try:
+                    write_private(path, live)
+                except OSError:
+                    if not listing:
+                        raise
             return name
     return None
 
 
 def finite(x):
-    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+    """A usable number: not a bool, NaN, infinity or an absurd magnitude (which the app can't hold)."""
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and -1e12 < x < 1e12
 
 
 def clean_rate_limit(rl):
@@ -168,7 +176,8 @@ def clean_rate_limit(rl):
     for key in ("primary_window", "secondary_window"):
         w = rl.get(key)
         valid = isinstance(w, dict) and all(
-            w.get(f) is None or finite(w[f]) for f in ("used_percent", "limit_window_seconds", "reset_at"))
+            w.get(f) is None or finite(w[f]) for f in ("used_percent", "limit_window_seconds", "reset_at")) and all(
+            finite(v) for v in w.values() if isinstance(v, (int, float)) and not isinstance(v, bool))
         rl[key] = w if valid else None
     return rl
 
@@ -203,7 +212,7 @@ def fetch_usage(auth):
         usage["_resets"] = sorted(
             c["expires_at"] for c in credits
             if isinstance(c, dict) and c.get("status") == "available" and c.get("is_supported_by_plan")
-            and isinstance(c.get("expires_at"), str))
+            and isinstance(c.get("expires_at"), str) and c["expires_at"])
     except Exception:
         pass
     return usage
@@ -216,14 +225,14 @@ def fmt_window(w):
     label = "session" if secs <= 6 * 3600 else "weekly" if secs >= 6 * 86400 else f"{secs // 3600}h"
     pct = int(w.get("used_percent") or 0)
     color = RED if pct >= 80 else YELLOW if pct >= 50 else GREEN
-    r = max(0, int(w.get("reset_at", time.time()) - time.time()))
+    r = max(0, int((w.get("reset_at") or time.time()) - time.time()))
     left = f"{r // 86400}d" if r >= 86400 else f"{r // 3600}h{r % 3600 // 60:02d}" if r >= 3600 else f"{r // 60}m"
     return f"{label}: {color}{left} {pct}%{RESET}"
 
 
 def all_usages():
     """(active account name, {name: auth}, {name: usage response})."""
-    current = sync_active()
+    current = sync_active(listing=True)
     auths = {n: load(p) for n, p in accounts().items()}
     with ThreadPoolExecutor(max_workers=8) as pool:
         usages = dict(zip(auths, pool.map(fetch_usage, auths.values())))

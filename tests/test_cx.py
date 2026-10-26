@@ -440,6 +440,16 @@ class LastKnownUsageTest(CxTestCase):
         alice = json.loads(out, parse_constant=self.fail)[0]  # no NaN printed
         self.assertEqual((alice["windows"], alice["last_seen"]), ([self.WEEK], 1.0))
         self.assertEqual(self.run_cx()[0], 0)
+        entry["rate_limit"]["primary_window"] = dict(self.WEEK, reset_at=10 ** 400)
+        with open(self.path(".codex-accounts", "_usage.json"), "w") as f:
+            json.dump({"alice": entry}, f)
+        self.assertEqual(json.loads(self.run_cx("json")[1])[0]["windows"], [self.WEEK])
+
+    def test_list_with_a_null_reset_time(self):
+        self.usage["alice@example.com"] = {"rate_limit": {"primary_window": dict(self.WEEK, reset_at=None)}}
+        code, out = self.run_cx()
+        self.assertEqual(code, 0, out)
+        self.assertIn("42%", out)
 
     def test_failed_write_still_shows_the_usage(self):
         self.usage["alice@example.com"] = self.LIVE
@@ -507,7 +517,7 @@ class FetchUsageTest(SafeTestCase):
 
     def test_malformed_window_is_dropped(self):
         for field in ("used_percent", "limit_window_seconds", "reset_at"):
-            for bad in ('"x"', "NaN", "Infinity", "-Infinity", "true", "[]"):
+            for bad in ('"x"', "NaN", "Infinity", "-Infinity", "true", "[]", "1" + "0" * 400, "1e12", "-1e12"):
                 fields = dict({k: json.dumps(v) for k, v in self.WEEK.items()}, **{field: bad})
                 window = "{" + ", ".join(f'"{k}": {v}' for k, v in fields.items()) + "}"
                 body = '{"rate_limit": {"primary_window": %s, "secondary_window": %s}}' % (window, json.dumps(self.WEEK))
@@ -515,16 +525,23 @@ class FetchUsageTest(SafeTestCase):
                 self.assertEqual((rl["primary_window"], rl["secondary_window"]), (None, self.WEEK), (field, bad))
         for window in ('"x"', "[]", "5"):
             self.assertIsNone(self.fetch('{"rate_limit": {"primary_window": %s}}' % window)["rate_limit"]["primary_window"])
+        extra = '{"rate_limit": {"primary_window": {"used_percent": 1, "reset_after_seconds": NaN}}}'
+        self.assertIsNone(self.fetch(extra)["rate_limit"]["primary_window"])  # any other number field too
+        kept = dict(self.WEEK, reset_after_seconds=60, note="x")
+        self.assertEqual(self.fetch(json.dumps({"rate_limit": {"primary_window": kept}}))["rate_limit"]["primary_window"], kept)
         nulls = dict(self.WEEK, limit_window_seconds=None, reset_at=None)
         self.assertEqual(self.fetch(json.dumps({"rate_limit": {"primary_window": nulls}}))["rate_limit"]["primary_window"], nulls)
 
     def test_rate_limit_not_an_object(self):
-        self.assertEqual(self.fetch('{"rate_limit": "x"}')["rate_limit"], {"primary_window": None, "secondary_window": None})
+        for rl in ('"x"', "5", "[]", "null", "true"):
+            self.assertEqual(self.fetch('{"rate_limit": %s}' % rl)["rate_limit"],
+                             {"primary_window": None, "secondary_window": None}, rl)
         self.assertNotIn("rate_limit", self.fetch('{"plan_type": "free"}'))  # no limits: left as the API says
 
     def test_malformed_credits_are_ignored(self):
         credit = {"status": "available", "is_supported_by_plan": True, "expires_at": "2099-01-01T00:00:00Z"}
-        credits = json.dumps({"credits": [5, "x", dict(credit, expires_at=5), dict(credit, expires_at=None), credit]})
+        credits = json.dumps({"credits": [5, "x", dict(credit, expires_at=5), dict(credit, expires_at=None),
+                                          dict(credit, expires_at=""), credit]})
         self.assertEqual(self.fetch(json.dumps({"rate_limit": {}}), credits)["_resets"], ["2099-01-01T00:00:00Z"])
 
 
@@ -558,16 +575,51 @@ class MalformedAccountTest(SafeTestCase):
                     self.assertIn("42%", out.getvalue())
 
 
-class ReadOnlyStoreTest(CxTestCase):
-    def test_listing_works_without_a_lock(self):
+class LockTest(CxTestCase):
+    def setUp(self):
+        super().setUp()
         self.save("alice", ALICE)
         self.sign_in(ALICE)
+        self.flocks = []
+        patcher = mock.patch.object(self.cx.fcntl, "flock", lambda fd, op: self.flocks.append(op))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def read_only_store(self):
         os.chmod(self.path(".codex-accounts"), 0o500)
         self.addCleanup(os.chmod, self.path(".codex-accounts"), 0o700)
+
+    def test_commands_hold_the_lock(self):
+        for argv in (["json"], [], ["save", "alice"]):
+            self.flocks.clear()
+            self.assertEqual(self.run_cx(*argv)[0], 0, argv)
+            self.assertEqual(self.flocks, [self.cx.fcntl.LOCK_EX], argv)
+
+    def test_read_only_lock_file_still_locks(self):
+        lock = self.path(".codex-accounts", ".lock")
+        open(lock, "w").close()
+        os.chmod(lock, 0o444)
+        self.assertEqual(self.run_cx("json")[0], 0)
+        self.assertEqual(self.flocks, [self.cx.fcntl.LOCK_EX])
+
+    def test_listing_works_in_a_read_only_store(self):
+        self.read_only_store()
         for argv in (["json"], []):
             code, out = self.run_cx(*argv)
             self.assertEqual(code, 0, out)
+        self.assertEqual(self.flocks, [])
         self.assertFalse(os.path.exists(self.path(".codex-accounts", ".lock")))
+
+    def test_rotated_tokens_in_a_read_only_store(self):
+        rotated = codex_auth("alice@example.com", "user-alice", "acct-alice", refresh="r2")
+        self.sign_in(rotated)
+        self.read_only_store()
+        code, out = self.run_cx("json")
+        self.assertEqual(code, 0, out)
+        self.assertTrue(json.loads(out)[0]["active"])
+        with self.assertRaises(PermissionError):  # a switch must not go on without saving them
+            self.cx.sync_active()
+        self.assertEqual(self.stored("alice"), ALICE)
 
 
 class RemoveTest(CxTestCase):

@@ -95,9 +95,11 @@ does not call it itself when ccx has accounts.
 Plans seen: Codex Pro has only a weekly window (no 5h); `prolite` = "Pro Lite"; Claude `max`.
 
 Usage responses are checked before use (#19): a response that is not a JSON object counts as a
-failure (`usage unreachable` in `cx`, the last known usage in `ccx`), and a window whose numbers are
-not finite numbers (text, NaN, infinity), or that is not an object, is dropped. One malformed
-account never stops the others from being listed, and `cx json`/`ccx json` never print NaN.
+failure (`usage unreachable` in `cx`, the last known usage in `ccx`), and a window that is not an object,
+or holds a number field that is not a plain finite number (text, boolean, NaN, infinity, a
+magnitude of 1e12 or more), is dropped. One malformed
+account never stops the others from being listed, and a usage response never makes `cx json` or
+`ccx json` print NaN.
 
 ## `cx` — Codex accounts
 
@@ -111,8 +113,9 @@ Commands: `cx` (list + usage), `cx save <name>`, `cx add [name]`, `cx use <name>
 - Before any switch, `sync_active()` copies the live `~/.codex/auth.json` back to its stored
   account (Codex refreshes/rotates tokens; stale copies would break).
 - Account identity = (`chatgpt_user_id` from id_token claims, `tokens.account_id`).
-- `locked()` serializes commands on `~/.codex-accounts/.lock`; a store where the lock can't be
-  created (read-only) runs unlocked, so listing still works there.
+- `locked()` serializes commands on `~/.codex-accounts/.lock` (opened read-only, created if
+  missing). Only a read-only store with no `.lock` yet runs unlocked; listing then still works,
+  without refreshing the active account's copy.
 - Last known usage: `~/.codex-accounts/_usage.json` (0600) keeps, per account, the last usage read
   (`rate_limit`, free resets, time `at`) and the identity it was read with. When the usage call
   fails (offline, HTTP error, expired token), `cx json` returns that reading with `last_seen` and
