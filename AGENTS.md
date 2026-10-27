@@ -94,7 +94,7 @@ it spends a reset. Claude's free reset (shown on claude.ai → Settings → Usag
 
 `/api/oauth/usage` is **rate limited** (HTTP 429 with `retry-after`, ~5 min) when polled often:
 `ccx` re-reads it at most every 2 minutes per account, caches identities per token, and the app
-does not call it itself when ccx has accounts.
+does not call it itself when a ccx account is active.
 
 Plans seen: Codex Pro has only a weekly window (no 5h); `prolite` = "Pro Lite"; Claude `max`.
 
