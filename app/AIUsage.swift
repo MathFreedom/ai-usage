@@ -407,7 +407,7 @@ final class UsageModel: ObservableObject {
     var showsClaude: Bool { !claudeUnused || !claudeAccounts.isEmpty || !claude.isEmpty || notes[.claude] != nil }
     var showsCodex: Bool { !codexLoaded || !codex.isEmpty || codexFailed || notes[.openai] != nil }
 
-    /// No account saved with ccx: read the usage API with Claude Code's own token.
+    /// No active ccx account: read the usage API with Claude Code's own token.
     /// False when a token was found but the API didn't answer (429, offline): nothing learned.
     private func refreshClaudeFromKeychain() async -> Bool {
         if auth?.valid != true { auth = await Task.detached { claudeAuth() }.value }

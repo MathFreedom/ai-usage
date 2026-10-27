@@ -76,7 +76,8 @@ longer leads anywhere. After `git pull`, pick one:
      status line instead, below);
    - **keep this status line**: copy it out of the repo's history, from your clone, and point
      `statusLine.command` at `~/.claude/ai-usage-statusline.sh`. The copy refuses to overwrite an
-     existing file (`set -C`); if that file is already there, pick another name:
+     existing file (`set -C`); if that file is already there, pick another name (in both places
+     below, and in `statusLine.command`):
      `f=$(git show 15cf9d5:claude/statusline.sh) && (set -C; printf '%s\n' "$f" > ~/.claude/ai-usage-statusline.sh) && chmod +x ~/.claude/ai-usage-statusline.sh`;
    - **remove the status line**:
      `tmp=$(mktemp) && jq 'del(.statusLine)' ~/.claude/settings.json > "$tmp" && cat "$tmp" > ~/.claude/settings.json && rm "$tmp"`
