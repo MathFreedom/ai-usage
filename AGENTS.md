@@ -38,7 +38,8 @@ macOS tooling to watch Claude and Codex usage limits and to switch between sever
 
 The repo is the menu bar app and its two CLIs only. Neither the installer nor the app touches
 Claude Code's or Codex's settings or terminal display; `cx use`/`ccx use` only swap the
-signed-in account (auth file, Keychain item, `oauthAccount`). A Claude Code status line used to
+signed-in account (auth file, Keychain item, `oauthAccount`; `cx use` also restarts or stops the
+Codex daemon, see below). A Claude Code status line used to
 live here (see the README's upgrade notes).
 
 Edits in the repo are live for `cx` and `ccx` (symlinks). The app must be rebuilt:
@@ -82,7 +83,7 @@ Edits in the repo are live for `cx` and `ccx` (symlinks). The app must be rebuil
 | Data | Endpoint / file | Auth |
 |---|---|---|
 | Claude limits (5h, weekly, per-model weekly e.g. Fable) | `GET https://api.anthropic.com/api/oauth/usage` → `limits[]` (`kind`: `session`, `weekly_all`, `weekly_scoped` + `scope.model.display_name`) | Claude Code's OAuth token from Keychain item `Claude Code-credentials` (`claudeAiOauth.accessToken`, check `expiresAt` ms), header `anthropic-beta: oauth-2025-04-20` |
-| Claude last known usage | the last Claude usage the app showed, kept in its UserDefaults (`lastClaudeUsage`, written when it changes); shown only when no `ccx` account is active, the usage API can't be read (no token, or no answer) and the app has nothing yet; a window that has reset since shows 0 % | — |
+| Claude last known usage | the last Claude usage the app showed, kept in its UserDefaults (`lastClaudeUsage`, written when it changes, its time included: in practice after each successful read); shown only when no `ccx` account is active, the usage API can't be read (no token, or no answer) and the app has nothing yet; a window that has reset since shows 0 % | — |
 | Claude account identity | `GET https://api.anthropic.com/api/oauth/profile` → `account.{uuid,email}` | same OAuth token |
 | Codex usage per account | `GET https://chatgpt.com/backend-api/wham/usage` (`rate_limit.primary_window/secondary_window`: `used_percent`, `limit_window_seconds`, `reset_at`) | `Authorization: Bearer <access_token>`, `ChatGPT-Account-Id: <account_id>` from each stored `auth.json` |
 | Codex free "Full reset" credits | `GET https://chatgpt.com/backend-api/wham/rate-limit-reset-credits` (`credits[]` with `status`, `expires_at`) | same |

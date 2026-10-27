@@ -67,23 +67,29 @@ and must pass `tools/check.sh` (builds, offline tests, secret scan).
 
 Earlier versions also installed a Claude Code status line: `statusLine` in
 `~/.claude/settings.json` points at `~/.claude/statusline-cache.sh`, a link into this repo that no
-longer leads anywhere. After `git pull`:
+longer leads anywhere. After `git pull`, pick one:
 
 1. Print the status line you had before installing (`null` if none):
    `jq .statusLine ~/.claude/settings.json.bak-ai-usage`
-2. Then, in `~/.claude/settings.json`, either set that one back as `statusLine`, or keep this
-   status line by copying it out of the repo's history (from your clone) and pointing
-   `statusLine.command` at `~/.claude/statusline.sh`:
-   `git show 15cf9d5:claude/statusline.sh > ~/.claude/statusline.sh && chmod +x ~/.claude/statusline.sh`,
-   or remove the status line:
-   `tmp=$(mktemp) && jq 'del(.statusLine)' ~/.claude/settings.json > "$tmp" && cat "$tmp" > ~/.claude/settings.json && rm "$tmp"`
+2. In `~/.claude/settings.json`, either:
+   - **go back to it**: set what step 1 printed as `statusLine` (if it printed `null`, remove the
+     status line instead, below);
+   - **keep this status line**: copy it out of the repo's history (from your clone; `set -C`
+     refuses to overwrite an existing file) and point `statusLine.command` at
+     `~/.claude/ai-usage-statusline.sh`:
+     `(set -C; git show 15cf9d5:claude/statusline.sh > ~/.claude/ai-usage-statusline.sh) && chmod +x ~/.claude/ai-usage-statusline.sh`;
+   - **remove the status line**:
+     `tmp=$(mktemp) && jq 'del(.statusLine)' ~/.claude/settings.json > "$tmp" && cat "$tmp" > ~/.claude/settings.json && rm "$tmp"`
 3. Remove what it left behind:
-   `rm -f ~/.claude/statusline-cache.sh ~/.claude/usage-cache.json ~/.config/ai-usage/statusline-chain ~/.claude/settings.json.bak-ai-usage`
+   `rm -f ~/.claude/statusline-cache.sh ~/.claude/usage-cache.json ~/.claude/settings.json.bak-ai-usage`
+   and, unless you kept this status line and want the previous one to keep running behind it,
+   `rm -f ~/.config/ai-usage/statusline-chain`.
 
 ## Uninstall
 
-Turn off **Open at Login** in the app's settings. Then quit the app and remove everything the
-installer and the app created:
+If you installed a version with the status line, follow the upgrade steps above first. Turn off
+**Open at Login** in the app's settings. Then quit the app and remove everything the installer and
+the app created:
 
 ```sh
 osascript -e 'quit app "AI Usage"'

@@ -382,7 +382,7 @@ final class UsageModel: ObservableObject {
             if let active = claudeAccounts.first(where: \.active) {
                 claude = active.windows
                 claudeUpdated = active.lastSeen ?? Date()
-                rememberClaude()
+                if accounts != nil { rememberClaude() }  // not when ccx failed: same windows, no new reading
             } else if !(await refreshClaudeFromKeychain()) {
                 answered = false
                 // Nothing read yet (e.g. launched offline): the last usage the app read.
@@ -426,14 +426,16 @@ final class UsageModel: ObservableObject {
         return false
     }
 
-    /// Keeps the Claude usage just shown for `lastKnownClaude()`; written only when it changed.
-    /// An empty reading keeps the previous one.
+    /// Keeps the Claude usage just shown for `lastKnownClaude()`; written only when it changed (its
+    /// time included, so in practice after each live read). An empty reading keeps the previous one.
     private func rememberClaude() {
         guard let at = claudeUpdated, !claude.isEmpty else { return }
         let saved = SavedClaudeUsage(at: at, windows: claude.map {
             SavedClaudeUsage.Window(label: $0.label, percent: $0.percent, resetAt: $0.resetAt)
         })
-        guard let data = try? JSONEncoder().encode(saved), data != defaults.data(forKey: Self.lastClaudeKey) else { return }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys  // same reading, same bytes: the comparison below holds
+        guard let data = try? encoder.encode(saved), data != defaults.data(forKey: Self.lastClaudeKey) else { return }
         defaults.set(data, forKey: Self.lastClaudeKey)
     }
 
