@@ -13,12 +13,11 @@ switch between your accounts.
   per-model windows, Codex's windows and free resets. A provider you don't use stays out of the way.
 - **Accounts**: save several Claude Code and Codex accounts, switch with a click or from the
   terminal (`ccx`, `cx`).
-- **Status line** for Claude Code: `Opus 5.5 │ cache 47m │ session: 3h29 5% │ weekly: 5d 2%`.
 - **Settings** (⚙︎): open at login, appearance (automatic, light, dark), English or French.
 
 ## Install
 
-Requires macOS 14+, the Xcode Command Line Tools (`xcode-select --install`) and `jq`.
+Requires macOS 14+ and the Xcode Command Line Tools (`xcode-select --install`).
 Claude Code and the Codex CLI are each optional.
 
 ```sh
@@ -26,10 +25,9 @@ git clone https://github.com/MathFreedom/ai-usage && cd ai-usage
 ./install.sh
 ```
 
-This builds `~/Applications/AI Usage.app`, links `cx` and `ccx` into `~/.local/bin` (add it to
-your `PATH` if needed) and sets the Claude Code status line. A status line you already had keeps
-running in the background, so its integrations keep working. Then save the accounts you're
-signed in with:
+This builds `~/Applications/AI Usage.app` and links `cx` and `ccx` into `~/.local/bin` (add it to
+your `PATH` if needed). The installer doesn't touch Claude Code's or Codex's settings. Then save
+the accounts you're signed in with:
 
 ```sh
 ccx save    # Claude Code
@@ -65,20 +63,33 @@ need a restart.
 [`AGENTS.md`](AGENTS.md) documents the internals; changes follow [`docs/PROCESS.md`](docs/PROCESS.md)
 and must pass `tools/check.sh` (builds, offline tests, secret scan).
 
+## Upgrading from a version with the status line
+
+Earlier versions also installed a Claude Code status line: `statusLine` in
+`~/.claude/settings.json` points at `~/.claude/statusline-cache.sh`, a link into this repo that no
+longer leads anywhere. After `git pull`:
+
+1. Print the status line you had before installing (`null` if none):
+   `jq .statusLine ~/.claude/settings.json.bak-ai-usage`
+2. Then, in `~/.claude/settings.json`, either set that one back as `statusLine`, or keep this
+   status line by copying it out of the repo's history (from your clone) and pointing
+   `statusLine.command` at `~/.claude/statusline.sh`:
+   `git show 15cf9d5:claude/statusline.sh > ~/.claude/statusline.sh && chmod +x ~/.claude/statusline.sh`,
+   or remove the status line:
+   `tmp=$(mktemp) && jq 'del(.statusLine)' ~/.claude/settings.json > "$tmp" && cat "$tmp" > ~/.claude/settings.json && rm "$tmp"`
+3. Remove what it left behind:
+   `rm -f ~/.claude/statusline-cache.sh ~/.claude/usage-cache.json ~/.config/ai-usage/statusline-chain ~/.claude/settings.json.bak-ai-usage`
+
 ## Uninstall
 
-Turn off **Open at Login** in the app's settings. Then quit the app, print the status line you
-had before installing (if any; set it back in `~/.claude/settings.json` afterwards if you want
-it), remove everything the installer created, and remove the status line from Claude Code's
-settings:
+Turn off **Open at Login** in the app's settings. Then quit the app and remove everything the
+installer and the app created:
 
 ```sh
 osascript -e 'quit app "AI Usage"'
-jq .statusLine ~/.claude/settings.json.bak-ai-usage
 rm -rf ~/Applications/AI\ Usage.app ~/.local/bin/cx ~/.local/bin/ccx
-rm -rf ~/.codex-accounts ~/.config/ai-usage ~/.claude/usage-cache.json ~/.claude/settings.json.bak-ai-usage
-tmp=$(mktemp) && jq 'del(.statusLine)' ~/.claude/settings.json > "$tmp" && cat "$tmp" > ~/.claude/settings.json && rm "$tmp"
-rm ~/.claude/statusline-cache.sh
+rm -rf ~/.codex-accounts ~/.config/ai-usage
+defaults delete io.github.mathfreedom.ai-usage
 ```
 
 Saved Claude accounts live in Keychain Access under `ai-usage-claude:`; delete them there.

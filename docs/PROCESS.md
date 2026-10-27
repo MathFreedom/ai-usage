@@ -33,12 +33,12 @@ exists at step 3.
 - Start with **BIG or SMALL change?** BIG: up to 4 issues per section. SMALL: one question per
   section.
 - Then four sections, in order:
-  1. **Architecture** — boundaries between the app, `cx`/`ccx`, the status line and the
+  1. **Architecture** — boundaries between the app, `cx`/`ccx` and the
      installer; data flow; what is shared with Claude Code, Codex and the Keychain.
   2. **Code quality** — repetition, error handling, missing edge cases, over- or
      under-engineering.
   3. **Verification** — what will prove the change works: tests in `tests/` (run by
-     `tools/check.sh`) for `cx`, `ccx` and the status line; for the app, a build plus a visual
+     `tools/check.sh`) for `cx` and `ccx`; for the app, a build plus a visual
      check; and which failure modes stay unchecked.
   4. **Performance & energy** — polling, process spawns, Keychain calls, rate-limited endpoints
      (`/api/oauth/usage` answers 429 when polled too often).

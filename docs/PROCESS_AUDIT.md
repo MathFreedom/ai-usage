@@ -77,7 +77,7 @@ report defects unrelated to it.
 
 ## Mutations — proof that a test catches its bug
 
-Each guard added or changed in `bin/` or `claude/` (an overwrite refusal, an account match, a
+Each guard added or changed in `bin/` (an overwrite refusal, an account match, a
 merge rule…) is proven by **mutation**, in the throwaway worktree, on committed code: break the
 behavior, run `tools/check.sh`, see a test fail; restore, see it pass again. A guard whose mutation
 no test catches is a finding (missing test). The app's SwiftUI views are not unit-tested; their
