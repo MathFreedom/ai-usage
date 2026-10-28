@@ -7,13 +7,14 @@ switch between your accounts.
   <img src="docs/screenshots/desktop.jpg" alt="AI Usage panel open below the menu bar, in light and dark mode" width="100%">
 </p>
 
-- **Menu bar**: the most used limit of each provider, colored only when it matters
-  (orange from 50 %, red from 80 %).
+- **Menu bar**: the most used limit of each provider by default, or the one you choose, colored
+  only when it matters (orange from 50 %, red from 80 %).
 - **Panel**: every limit with its countdown and exact reset time: Claude's 5-hour, weekly and
   per-model windows, Codex's windows and free resets. A provider you don't use stays out of the way.
 - **Accounts**: save several Claude Code and Codex accounts, switch with a click or from the
   terminal (`ccx`, `cx`).
-- **Settings** (⚙︎): open at login, appearance (automatic, light, dark), English or French.
+- **Settings** (⚙︎): open at login, appearance (automatic, light, dark), English or French, and
+  which limit the menu bar shows for each provider.
 
 ## Install
 
