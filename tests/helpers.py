@@ -11,7 +11,6 @@ import os
 import re
 import shlex
 import shutil
-import signal
 import socket
 import subprocess
 import tempfile
@@ -21,45 +20,6 @@ import urllib.request
 from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_REAL_POPEN = subprocess.Popen  # captured before any guard is installed
-_REAL_FORK_EXEC = _posixsubprocess.fork_exec  # what Popen itself uses to start the child
-
-
-def kill_group(pgid):
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-
-
-def real_run(args, input=None, env=None, timeout=20):
-    """Run a repo script for real (status line tests only), bypassing the guard. It runs in its
-    own session: `pid` is the process group of everything it starts, and the whole group is
-    killed if it overruns the timeout, so a hanging script can't hang the suite."""
-    with mock.patch("_posixsubprocess.fork_exec", _REAL_FORK_EXEC), \
-            _REAL_POPEN(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                        text=True, env=env, start_new_session=True) as proc:
-        try:
-            out, err = proc.communicate(input, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            kill_group(proc.pid)
-            proc.communicate()
-            raise
-    result = subprocess.CompletedProcess(args, proc.returncode, out, err)
-    result.pid = proc.pid
-    return result
-
-
-def wait_group_gone(pgid, deadline_s=10):
-    """Wait until no process of the group is left (background jobs included)."""
-    end = time.time() + deadline_s
-    while time.time() < end:
-        try:
-            os.killpg(pgid, 0)
-        except ProcessLookupError:
-            return True
-        time.sleep(0.02)
-    return False
 
 
 class RealCallBlocked(AssertionError):

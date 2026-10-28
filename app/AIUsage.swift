@@ -1,6 +1,6 @@
 // AI Usage — menu bar panel showing Claude and Codex usage limits, with account switching for both.
-// Data: Claude accounts from `ccx json` (bin/ccx); with a single Claude account, the usage API
-//       (Claude Code's Keychain token), falling back to ~/.claude/usage-cache.json (claude/statusline.sh).
+// Data: Claude accounts from `ccx json` (bin/ccx); with no active saved account, the usage API
+//       (Claude Code's Keychain token), falling back to the last Claude usage the app read.
 //       Codex accounts from `cx json` (bin/cx). Build with ./build.sh.
 import AppKit
 import ServiceManagement
@@ -9,7 +9,6 @@ import SwiftUI
 let home = NSHomeDirectory()
 let cxPath = home + "/.local/bin/cx"
 let ccxPath = home + "/.local/bin/ccx"
-let claudeCachePath = home + "/.claude/usage-cache.json"
 
 // MARK: - Data
 
@@ -314,21 +313,16 @@ func fetchClaudeLive(token: String) async -> [UsageWindow]? {
     }
 }
 
-/// Last resort: the last snapshot saved by the Claude Code status line, read only when no saved
-/// account is active, the usage API can't be read (no token, or no answer) and nothing was read before.
-func loadClaude() -> (windows: [UsageWindow], updated: Date?) {
-    guard let data = FileManager.default.contents(atPath: claudeCachePath),
-          let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-    else { return ([], nil) }
-    let limits = obj["rate_limits"] as? [String: Any] ?? [:]
-    var windows: [UsageWindow] = []
-    for (key, label) in [("five_hour", "5h"), ("seven_day", "Weekly")] {
-        guard let w = limits[key] as? [String: Any], let pct = number(w["used_percentage"]) else { continue }
-        let reset = number(w["resets_at"]).map { Date(timeIntervalSince1970: $0) }
-        let elapsed = reset.map { $0 < Date() } ?? false  // window already reset since the snapshot
-        windows.append(UsageWindow(label: label, percent: elapsed ? 0 : Int(pct), resetAt: elapsed ? nil : reset))
+/// The last Claude usage the app showed (ccx's active account or the usage API), kept in
+/// UserDefaults: shown as a last resort when nothing can be read (launched offline, no token).
+struct SavedClaudeUsage: Codable {
+    struct Window: Codable {
+        let label: String
+        let percent: Int
+        let resetAt: Date?
     }
-    return (windows, number(obj["updated_at"]).map { Date(timeIntervalSince1970: $0) })
+    let at: Date
+    let windows: [Window]
 }
 
 // MARK: - Model
@@ -354,10 +348,13 @@ final class UsageModel: ObservableObject {
     private var appearanceObservation: NSKeyValueObservation?
 
     private let live: Bool
+    private let defaults: UserDefaults
+    static let lastClaudeKey = "lastClaudeUsage"
 
     /// `live: false` builds an empty model that never fetches (used to render screenshots).
-    init(live: Bool = true) {
+    init(live: Bool = true, defaults: UserDefaults = .standard) {
         self.live = live
+        self.defaults = defaults
         guard live else { return }
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in
@@ -385,10 +382,11 @@ final class UsageModel: ObservableObject {
             if let active = claudeAccounts.first(where: \.active) {
                 claude = active.windows
                 claudeUpdated = active.lastSeen ?? Date()
+                if accounts != nil { rememberClaude() }  // not when ccx failed: same windows, no new reading
             } else if !(await refreshClaudeFromKeychain()) {
                 answered = false
-                // Nothing read yet (e.g. launched offline): the status line's snapshot, which can lag a reset.
-                if claude.isEmpty { (claude, claudeUpdated) = loadClaude() }
+                // Nothing read yet (e.g. launched offline): the last usage the app read.
+                if claude.isEmpty { (claude, claudeUpdated) = lastKnownClaude() }
             }
             if answered { claudeUnused = claudeAccounts.isEmpty && claude.isEmpty }
             updateMenuBarImage()
@@ -409,22 +407,50 @@ final class UsageModel: ObservableObject {
     var showsClaude: Bool { !claudeUnused || !claudeAccounts.isEmpty || !claude.isEmpty || notes[.claude] != nil }
     var showsCodex: Bool { !codexLoaded || !codex.isEmpty || codexFailed || notes[.openai] != nil }
 
-    /// No account saved with ccx: read the usage API with Claude Code's own token.
+    /// No active ccx account: read the usage API with Claude Code's own token.
     /// False when a token was found but the API didn't answer (429, offline): nothing learned.
     private func refreshClaudeFromKeychain() async -> Bool {
         if auth?.valid != true { auth = await Task.detached { claudeAuth() }.value }
         guard let token = auth?.token else {
-            // No token (signed out, or expired until Claude Code runs again): the status line's snapshot, if any.
-            if claude.isEmpty { (claude, claudeUpdated) = loadClaude() }
+            // No token (signed out, or expired until Claude Code runs again): the last usage read, if any.
+            if claude.isEmpty { (claude, claudeUpdated) = lastKnownClaude() }
             return true
         }
         if let live = await fetchClaudeLive(token: token) {
             claude = live
             claudeUpdated = Date()
+            rememberClaude()
             return true
         }
         auth = nil  // revoked or rotated by Claude Code: re-read the Keychain next time
         return false
+    }
+
+    /// Keeps the Claude usage just shown for `lastKnownClaude()`; written only when it changed (its
+    /// time included, so in practice after each live read). An empty reading keeps the previous one.
+    private func rememberClaude() {
+        guard let at = claudeUpdated, !claude.isEmpty else { return }
+        let saved = SavedClaudeUsage(at: at, windows: claude.map {
+            SavedClaudeUsage.Window(label: $0.label, percent: $0.percent, resetAt: $0.resetAt)
+        })
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys  // same reading, same bytes: the comparison below holds
+        guard let data = try? encoder.encode(saved), data != defaults.data(forKey: Self.lastClaudeKey) else { return }
+        defaults.set(data, forKey: Self.lastClaudeKey)
+    }
+
+    /// Last resort, read only when no saved account is active, the usage API can't be read (no
+    /// token, or no answer) and nothing was read before. A window that has reset since shows 0 %.
+    private func lastKnownClaude() -> (windows: [UsageWindow], updated: Date?) {
+        guard let data = defaults.data(forKey: Self.lastClaudeKey),
+              let saved = try? JSONDecoder().decode(SavedClaudeUsage.self, from: data)
+        else { return ([], nil) }
+        let now = Date()
+        let windows = saved.windows.map { w -> UsageWindow in
+            let elapsed = w.resetAt.map { $0 < now } ?? false
+            return UsageWindow(label: w.label, percent: elapsed ? 0 : w.percent, resetAt: elapsed ? nil : w.resetAt)
+        }
+        return (windows, saved.at)
     }
 
     /// An open Claude Code session refreshing its token can write the previous account back.

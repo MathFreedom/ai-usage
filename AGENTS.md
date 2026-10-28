@@ -19,9 +19,8 @@ Any non-trivial change, code or docs, follows [docs/PROCESS.md](docs/PROCESS.md)
 - Pre-flight, before every commit and in every audit: `tools/check.sh` → must end with
   `check: OK`. It runs the offline tests in `tests/` (`unittest`, Python 3.9): `cx`/`ccx` are
   loaded with a temp `HOME`, a fake `security`, faked APIs, and a guard that fails any test
-  reaching a real process (subprocess, `os` spawn/exec/fork), network, DNS or socket; the status
-  line runs for real with a temp `HOME`.
-  New behavior in `bin/` or `claude/` comes with a test.
+  reaching a real process (subprocess, `os` spawn/exec/fork), network, DNS or socket.
+  New behavior in `bin/` comes with a test.
 - Engineering preferences: explicit over clever; engineered enough (neither fragile nor
   over-abstracted); handle edge cases; flag repetition; keep existing behavior unless the change
   is about it — no rewrite as a side effect; docs updated in the same commit as the change.
@@ -35,10 +34,15 @@ macOS tooling to watch Claude and Codex usage limits and to switch between sever
 | Menu bar app (SwiftUI, single file) | `app/AIUsage.swift`, `app/build.sh` | `~/Applications/AI Usage.app` (built, ad-hoc signed) |
 | Codex account switcher (Python 3.9, stdlib only) | `bin/cx` | symlink `~/.local/bin/cx` |
 | Claude Code account switcher (Python 3.9, stdlib only) | `bin/ccx` | symlink `~/.local/bin/ccx` |
-| Claude Code status line (POSIX sh + jq) | `claude/statusline.sh` | symlink `~/.claude/statusline-cache.sh` |
 | Installer | `install.sh` | — |
 
-Edits in the repo are live for `cx`, `ccx` and the status line (symlinks). The app must be rebuilt:
+The repo is the menu bar app and its two CLIs only. Neither the installer nor the app touches
+Claude Code's or Codex's settings or terminal display; `cx use`/`ccx use` only swap the
+signed-in account (auth file, Keychain item, `oauthAccount`; `cx use` also restarts or stops the
+Codex daemon, see below). A Claude Code status line used to
+live here (see the README's upgrade notes).
+
+Edits in the repo are live for `cx` and `ccx` (symlinks). The app must be rebuilt:
 `app/build.sh && pkill -x AIUsage; open ~/Applications/AI\ Usage.app`.
 
 ## Menu bar app (`app/AIUsage.swift`)
@@ -79,7 +83,7 @@ Edits in the repo are live for `cx`, `ccx` and the status line (symlinks). The a
 | Data | Endpoint / file | Auth |
 |---|---|---|
 | Claude limits (5h, weekly, per-model weekly e.g. Fable) | `GET https://api.anthropic.com/api/oauth/usage` → `limits[]` (`kind`: `session`, `weekly_all`, `weekly_scoped` + `scope.model.display_name`) | Claude Code's OAuth token from Keychain item `Claude Code-credentials` (`claudeAiOauth.accessToken`, check `expiresAt` ms), header `anthropic-beta: oauth-2025-04-20` |
-| Claude fallback | `~/.claude/usage-cache.json` written by the status line, read only when no `ccx` account is active, the usage API can't be read (no token, or no answer) and the app has nothing yet | — |
+| Claude last known usage | the last Claude usage the app showed, kept in its UserDefaults (`lastClaudeUsage`, written when it changes, its time included: in practice after each successful read); shown only when no `ccx` account is active, the usage API can't be read (no token, or no answer) and the app has nothing yet; a window that has reset since shows 0 % | — |
 | Claude account identity | `GET https://api.anthropic.com/api/oauth/profile` → `account.{uuid,email}` | same OAuth token |
 | Codex usage per account | `GET https://chatgpt.com/backend-api/wham/usage` (`rate_limit.primary_window/secondary_window`: `used_percent`, `limit_window_seconds`, `reset_at`) | `Authorization: Bearer <access_token>`, `ChatGPT-Account-Id: <account_id>` from each stored `auth.json` |
 | Codex free "Full reset" credits | `GET https://chatgpt.com/backend-api/wham/rate-limit-reset-credits` (`credits[]` with `status`, `expires_at`) | same |
@@ -90,7 +94,7 @@ it spends a reset. Claude's free reset (shown on claude.ai → Settings → Usag
 
 `/api/oauth/usage` is **rate limited** (HTTP 429 with `retry-after`, ~5 min) when polled often:
 `ccx` re-reads it at most every 2 minutes per account, caches identities per token, and the app
-does not call it itself when ccx has accounts.
+does not call it itself when a ccx account is active.
 
 Plans seen: Codex Pro has only a weekly window (no 5h); `prolite` = "Pro Lite"; Claude `max`.
 
@@ -183,21 +187,6 @@ Commands: `ccx` (list + usage), `ccx save [name]`, `ccx add [name]`, `ccx use <n
   old account back. The app remembers the account chosen in the panel and shows a note if the
   active account changes back.
 - The Claude desktop app has its own login and is not affected.
-
-## Claude Code status line (`claude/statusline.sh`)
-
-Output: `Opus 5.5 │ cache 47m │ session: 3h29 5% │ weekly: 5d 2%` (colors by %). `refreshInterval: 60` in `~/.claude/settings.json`.
-
-- Reads the stdin JSON: `model.display_name`, `prompt_cache.{warm,expires_at}`,
-  `rate_limits.{five_hour,seven_day}.{used_percentage,resets_at}`.
-- Prompt cache TTL comes from the payload (1h on subscriptions, 5 min in overage); every request
-  refreshes it, so it sits at ~59–60m during active chatting.
-- Chaining: if another tool owned the status line, `install.sh` saves its command to
-  `~/.config/ai-usage/statusline-chain`, and the script feeds it every payload in the background
-  so that integration keeps working.
-- Writes `~/.claude/usage-cache.json` by **merging per window**, not overwriting: every Claude
-  Code session reports its own last-seen snapshot and idle sessions report stale ones (e.g. a
-  snapshot without `five_hour`). Rule: later `resets_at` wins; same window → higher % wins.
 
 ## Screenshots
 
