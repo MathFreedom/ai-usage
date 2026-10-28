@@ -43,6 +43,22 @@ func windowLabel(seconds: Int) -> String {
     return "\(seconds / 3600)h"
 }
 
+/// The limit the menu bar shows: the one labeled `choice`, else (no choice, or not on this
+/// account) the most used one, as before the setting existed.
+func menuBarWindow(_ windows: [UsageWindow], choice: String) -> UsageWindow? {
+    let chosen = choice.isEmpty ? [] : windows.filter { $0.label == choice }
+    return (chosen.isEmpty ? windows : chosen).max { $0.percent < $1.percent }
+}
+
+/// The labels offered in the settings: this account's limits, plus the saved choice when the
+/// account doesn't have it (the menu then still shows what is selected).
+func menuBarChoices(_ windows: [UsageWindow], saved: String) -> [String] {
+    var labels: [String] = []
+    for w in windows where !labels.contains(w.label) { labels.append(w.label) }
+    if !saved.isEmpty && !labels.contains(saved) { labels.append(saved) }
+    return labels
+}
+
 func planName(_ plan: String) -> String {
     if plan == "free" { return tr("Free", "Gratuit") }
     return ["prolite": "Pro Lite", "pro": "Pro", "plus": "Plus", "team": "Team", "max": "Max"][plan] ?? plan.capitalized
@@ -54,6 +70,8 @@ enum Brand {
     var product: String { self == .claude ? "Claude Code" : "Codex" }
     var tool: String { self == .claude ? ccxPath : cxPath }
     var fallbackSymbol: String { self == .claude ? "sparkle" : "chevron.left.forwardslash.chevron.right" }
+    /// Setting: the limit label the menu bar shows ("5h", "Weekly", "Fable weekly"…), empty for the most used.
+    var menuBarChoiceKey: String { self == .claude ? "menuBarClaude" : "menuBarCodex" }
     // Template images copied from the Claude and ChatGPT apps by build.sh, loaded once
     var image: NSImage? { self == .claude ? Brand.claudeImage : Brand.openaiImage }
     private static let claudeImage = load("claude")
@@ -489,6 +507,10 @@ final class UsageModel: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
+    private func menuBarChoice(_ brand: Brand) -> String {
+        defaults.string(forKey: brand.menuBarChoiceKey) ?? ""
+    }
+
     /// Appearance of the menu bar itself (it follows the wallpaper, not the app), read from the
     /// status item's window; re-renders the label whenever it changes.
     private func menuBarIsDark() -> Bool {
@@ -503,13 +525,15 @@ final class UsageModel: ObservableObject {
         return NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     }
 
-    private func updateMenuBarImage() {
+    /// Also called by the settings when the limit to show changes: no new read, just a redraw.
+    func updateMenuBarImage() {
         var items: [MenuBarLabel.Item] = []
-        if let pct = claude.map(\.percent).max() {
-            items.append(.init(brand: .claude, percent: pct))
+        if let shown = menuBarWindow(claude, choice: menuBarChoice(.claude)) {
+            items.append(.init(brand: .claude, percent: shown.percent))
         }
-        if let worst = codex.first(where: \.active)?.worst {
-            items.append(.init(brand: .openai, percent: worst.percent))
+        if let active = codex.first(where: \.active),
+           let shown = menuBarWindow(active.windows, choice: menuBarChoice(.openai)) {
+            items.append(.init(brand: .openai, percent: shown.percent))
         }
         // Each logo gets its own color; neutral items must still match the menu bar. A template
         // image does that by itself but can't hold colors, so colored labels are rendered with an
@@ -762,6 +786,8 @@ struct PanelView: View {
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
     @AppStorage(Language.key) private var language = Language.current.rawValue
     @AppStorage(Theme.key) private var theme = Theme.system.rawValue
+    @AppStorage(Brand.claude.menuBarChoiceKey) private var claudeChoice = ""
+    @AppStorage(Brand.openai.menuBarChoiceKey) private var codexChoice = ""
 
     private var claudeNote: String? {
         guard let updated = model.claudeUpdated else { return nil }
@@ -773,6 +799,13 @@ struct PanelView: View {
     /// The panel and its menus; the menu bar label keeps following the menu bar itself.
     private func applyTheme() {
         NSApp.appearance = (Theme(rawValue: theme) ?? .system).appearance
+    }
+
+    private func menuBarPicker(_ title: String, _ choice: Binding<String>, _ windows: [UsageWindow]) -> some View {
+        Picker(title, selection: choice) {
+            Text(tr("Highest", "Le plus haut")).tag("")
+            ForEach(menuBarChoices(windows, saved: choice.wrappedValue), id: \.self) { Text(windowName($0)).tag($0) }
+        }
     }
 
     var body: some View {
@@ -837,6 +870,13 @@ struct PanelView: View {
                     Picker(tr("Language", "Langue"), selection: $language) {
                         ForEach(Language.allCases) { Text($0.name).tag($0.rawValue) }
                     }
+                    if model.showsClaude {
+                        menuBarPicker(tr("Claude in menu bar", "Claude dans la barre"), $claudeChoice, model.claude)
+                    }
+                    if model.showsCodex {
+                        menuBarPicker(tr("Codex in menu bar", "Codex dans la barre"), $codexChoice,
+                                      model.codex.first(where: \.active)?.windows ?? [])
+                    }
                 } label: {
                     Image(systemName: "gearshape")
                 }
@@ -863,6 +903,8 @@ struct PanelView: View {
         .id(language)  // strings are computed, not observed: rebuild the panel when the language changes
         .onAppear { applyTheme() }
         .onChange(of: theme) { _, _ in applyTheme() }
+        .onChange(of: claudeChoice) { _, _ in model.updateMenuBarImage() }
+        .onChange(of: codexChoice) { _, _ in model.updateMenuBarImage() }
         .padding(12)
         .frame(width: 300)
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in

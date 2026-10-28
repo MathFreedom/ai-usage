@@ -50,8 +50,9 @@ Edits in the repo are live for `cx` and `ccx` (symlinks). The app must be rebuil
 - `MenuBarExtra` with `.menuBarExtraStyle(.window)`, `LSUIElement` app, macOS 14+, compiled with
   `swiftc -parse-as-library -swift-version 5` (Swift 5 mode on purpose: avoids Swift 6 strict
   concurrency noise). No Xcode project.
-- Menu bar label is an `ImageRenderer` image: Claude logo + %, OpenAI logo + % (worst window of
-  the active Claude and Codex accounts). One color per logo: neutral < 50, orange ≥ 50, red ≥ 80.
+- Menu bar label is an `ImageRenderer` image: Claude logo + %, OpenAI logo + % (per provider, the
+  limit chosen in the settings, else, or when the active account doesn't have it, the worst window
+  of the active Claude and Codex accounts: `menuBarWindow`). One color per logo: neutral < 50, orange ≥ 50, red ≥ 80.
   All neutral → template image (follows the menu bar by itself). Any color → non-template image
   whose neutral color is picked from the menu bar's own appearance (status item window
   `effectiveAppearance`, observed via KVO).
@@ -65,10 +66,14 @@ Edits in the repo are live for `cx` and `ccx` (symlinks). The app must be rebuil
   model with a `brand`). A card is hidden once its first refresh is done with nothing to show
   (no account, no data, no error, no note: the tool isn't used; `showsClaude` / `showsCodex`);
   with neither, `NoAccountCard` ("No accounts yet") takes their place. Footer: gear menu (Open
-  at Login via `SMAppService.mainApp`, Appearance, Language) and Quit.
+  at Login via `SMAppService.mainApp`, Appearance, Language, and the limit shown in the menu bar
+  for each provider shown in the panel) and Quit.
 - Settings, saved in UserDefaults: `theme` (`Theme`: system/light/dark, applied with
-  `NSApp.appearance` to the panel and its menus; the menu bar label keeps following the menu bar)
-  and `language` (`Language`: English/French, English until changed in the settings). Strings
+  `NSApp.appearance` to the panel and its menus; the menu bar label keeps following the menu bar),
+  `language` (`Language`: English/French, English until changed in the settings) and
+  `menuBarClaude` / `menuBarCodex` (`Brand.menuBarChoiceKey`: the label of the limit the menu bar
+  shows, empty for the most used one; offered from the active account's limits by
+  `menuBarChoices`, and a change only redraws the label). Strings
   go through `tr(en, fr)`, limit names through `windowName`, English messages printed by cx/ccx
   through `localized` (regex table — add new CLI messages there). The panel is rebuilt with
   `.id(language)` when it changes. Dates use the language's locale (en_GB / fr_FR).
